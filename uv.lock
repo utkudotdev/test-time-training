@@ -1128,19 +1128,6 @@ wheels = [
 ]
 
 [[package]]
-name = "numpy-stl"
-version = "3.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "python-utils" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/80/96366d1b69223d4ca55fca30f158096df169b00aa6b4dd963025980e7ede/numpy_stl-3.2.0.tar.gz", hash = "sha256:5a20c3f79cddaa0abc6a4b99f5486aceed4f88152f29b19a57acc844e183fd4d", size = 824382, upload-time = "2024-11-25T17:15:43.227Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/2c/e17b8814050427929077639d35a42187a006922600d4840475bdc5f64ebb/numpy_stl-3.2.0-py3-none-any.whl", hash = "sha256:697c81b107231362460aaedf4647e81ba54f54f59c896772fea7904c9c439da5", size = 20775, upload-time = "2024-11-25T17:15:41.346Z" },
-]
-
-[[package]]
 name = "nvidia-cublas"
 version = "13.1.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1496,18 +1483,6 @@ wheels = [
 ]
 
 [[package]]
-name = "python-utils"
-version = "3.9.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/13/4c/ef8b7b1046d65c1f18ca31e5235c7d6627ca2b3f389ab1d44a74d22f5cc9/python_utils-3.9.1.tar.gz", hash = "sha256:eb574b4292415eb230f094cbf50ab5ef36e3579b8f09e9f2ba74af70891449a0", size = 35403, upload-time = "2024-11-26T00:38:58.736Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/69/31c82567719b34d8f6b41077732589104883771d182a9f4ff3e71430999a/python_utils-3.9.1-py2.py3-none-any.whl", hash = "sha256:0273d7363c7ad4b70999b2791d5ba6b55333d6f7a4e4c8b6b39fb82b5fab4613", size = 32078, upload-time = "2024-11-26T00:38:57.488Z" },
-]
-
-[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1851,7 +1826,6 @@ source = { virtual = "." }
 dependencies = [
     { name = "mujoco" },
     { name = "numpy" },
-    { name = "numpy-stl" },
     { name = "stable-baselines3" },
     { name = "tensorboard" },
     { name = "viser" },
@@ -1866,7 +1840,6 @@ dev = [
 requires-dist = [
     { name = "mujoco", specifier = ">=3.7.0" },
     { name = "numpy", specifier = ">=2.4.4" },
-    { name = "numpy-stl", specifier = ">=3.2.0" },
     { name = "stable-baselines3", specifier = ">=2.8.0" },
     { name = "tensorboard", specifier = ">=2.20.0" },
     { name = "viser", specifier = ">=1.0.26" },

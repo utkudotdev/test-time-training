@@ -91,9 +91,7 @@ class DroneDeliveryEnv(gym.Env):
             low=-np.inf, high=np.inf, shape=(39,), dtype=np.float32
         )
 
-        self.goal_geom = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_GEOM, "goal"
-        )
+        self.goal_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "goal")
         self._prev_drone_to_goal = None
 
     def _get_sensor(self, name):
@@ -141,7 +139,9 @@ class DroneDeliveryEnv(gym.Env):
 
         # Orientation penalty (keep drone upright)
         drone_quat = self.data.qpos[3:7]
-        z_axis_world = 2 * (drone_quat[1] * drone_quat[3] + drone_quat[0] * drone_quat[2])
+        z_axis_world = 2 * (
+            drone_quat[1] * drone_quat[3] + drone_quat[0] * drone_quat[2]
+        )
         tilt = 1.0 - np.clip(z_axis_world, -1, 1) ** 2
         reward -= 0.1 * tilt
 
@@ -199,7 +199,9 @@ class DroneDeliveryEnv(gym.Env):
 
         mujoco.mj_step(self.model, self.data)
 
-        reward, self._prev_drone_to_goal = self._compute_reward(self._prev_drone_to_goal)
+        reward, self._prev_drone_to_goal = self._compute_reward(
+            self._prev_drone_to_goal
+        )
         terminated, reason = self._check_termination()
         truncated = self.step_count >= self.max_episode_steps
 

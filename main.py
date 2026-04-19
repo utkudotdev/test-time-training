@@ -1,5 +1,4 @@
 import mujoco
-from mujoco._specs import MjSpec
 import mujoco.viewer
 import time
 import numpy as np
@@ -14,6 +13,7 @@ def get_sensor_readings(model, data, name):
 
 
 GOAL_POSITION = np.array([10.0, 0.0, 2.0])
+GOAL_RADIUS = 0.15
 NUM_OBSTACLES = 10
 OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
 OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
@@ -22,13 +22,13 @@ alpha = 0.4
 prev_speed = rand.uniform(0.5, 2.0)
 prev_turbulence = rand.uniform(0.0, 1.0)
 
-def build_obstacle_scene() -> MjSpec:
+def build_obstacle_scene() -> mujoco.MjSpec:
     spec = mujoco.MjSpec.from_file("example.xml")
 
     spec.worldbody.add_geom(
         name="goal",
         type=mujoco.mjtGeom.mjGEOM_SPHERE,
-        size=[0.1],
+        size=[GOAL_RADIUS],
         rgba=[0.0, 0.7, 0.3, 0.5],
         pos=GOAL_POSITION.tolist(),
         contype=0,
