@@ -55,6 +55,11 @@ def main():
     data = mujoco.MjData(model)
 
     mujoco.mj_resetDataKeyframe(model, data, model.key("hover").id)
+    data.qpos[:3] = [0.0, 0.0, 1.5]
+    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+    data.qpos[7:10] = [0.0, 0.0, 0.8]
+    data.qpos[10:14] = [1.0, 0.0, 0.0, 0.0]
+    data.qvel[:] = 0.0
     mujoco.mj_forward(model, data)
 
     goal_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "goal")
@@ -71,8 +76,13 @@ def main():
             paused = not paused
         elif c == "R":
             mujoco.mj_resetDataKeyframe(model, data, model.key("hover").id)
+            data.qpos[:3] = [0.0, 0.0, 1.5]
+            data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+            data.qpos[7:10] = [0.0, 0.0, 0.8]
+            data.qpos[10:14] = [1.0, 0.0, 0.0, 0.0]
+            data.qvel[:] = 0.0
             mujoco.mj_forward(model, data)
-            print("Reset to hover keyframe.")
+            print("Reset.")
         elif c == "W":
             show_wind = not show_wind
             print(f"Wind visualization: {'on' if show_wind else 'off'}")

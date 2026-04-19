@@ -175,6 +175,16 @@ class DroneDeliveryEnv(gym.Env):
         self.step_count = 0
 
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.model.key("hover").id)
+
+        # Start drone in the air at 1.5m with box hanging below it.
+        # Tendon range [0, 0.6]: package1 at drone pos (0,0,1.5),
+        # package2 at box pos (0,0,0.8)+(0,0,0.1)=(0,0,0.9) → distance 0.6 (taut).
+        self.data.qpos[:3] = [0.0, 0.0, 1.5]   # drone position
+        self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]  # drone upright
+        self.data.qpos[7:10] = [0.0, 0.0, 0.8]  # box position (0.7m below drone)
+        self.data.qpos[10:14] = [1.0, 0.0, 0.0, 0.0]  # box upright
+        self.data.qvel[:] = 0.0
+
         mujoco.mj_forward(self.model, self.data)
 
         drone_pos = self.data.qpos[:3]
