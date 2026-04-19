@@ -3,6 +3,12 @@ import mujoco.viewer
 import time
 import numpy as np
 
+
+GRID_N  = 10
+GRID_W  = 2.0
+GRID_H = 1.5
+SCALE   = 0.15
+
 def draw_line(scn, from_pos, to_pos, rgba, width=0.005):
     if scn.ngeom >= scn.maxgeom:
         return
@@ -23,32 +29,29 @@ def draw_line(scn, from_pos, to_pos, rgba, width=0.005):
         np.array(to_pos,   dtype=np.float64),
     )
     scn.ngeom += 1
-GRID_N  = 10
-GRID_W  = 2.0
-SCALE   = 0.15   # wind vector → line length
 
-def update_wind_lines(viewer, t):
+def update_wind_lines(viewer, model, data):
     with viewer.lock():
         scn = viewer.user_scn
         scn.ngeom = 0
 
-        xs = np.linspace(-GRID_W / 2, GRID_W / 2, GRID_N)
-        ys = np.linspace(-GRID_W / 2, GRID_W / 2, GRID_N)
+        for body_id in range(1, model.nbody):
+            body_pos = data.xpos[body_id]
+            xs = np.linspace(body_pos[0] - GRID_W / 2, body_pos[0] + GRID_W / 2, GRID_N)
+            ys = np.linspace(body_pos[1] - GRID_W / 2, body_pos[1] + GRID_W / 2, GRID_N)
+            for x in xs:
+                for y in ys:
+                    pos = np.array([x, y, body_pos[2]])
+                    u, v = wind_field(pos, data.time)
+                    speed = np.sqrt(u*u + v*v)
 
-        for x in xs:
-            for y in ys:
-                pos = np.array([x, y, 0.1])  # slight z lift off ground
-                u, v = wind_field(pos, t)
-                speed = np.sqrt(u*u + v*v)
+                    tail = pos
+                    tip  = pos + np.array([u, v, 0.0]) * SCALE
 
-                tail = pos
-                tip  = pos + np.array([u, v, 0.0]) * SCALE
+                    c = np.clip(speed / 1.5, 0, 1)
+                    rgba = [c, 0.3, 1.0 - c, 1.0]
 
-                # color: blue (slow) → red (fast)
-                c = np.clip(speed / 1.5, 0, 1)
-                rgba = [c, 0.3, 1.0 - c, 0.8]
-
-                draw_line(scn, tail, tip, rgba)
+                    draw_line(scn, tail, tip, rgba, width=0.005)
 
 def wind_field(pos, t, speed=1.0, turbulence=0.3):
     cx, cy = 0.0, 0.0
@@ -58,8 +61,8 @@ def wind_field(pos, t, speed=1.0, turbulence=0.3):
     u = (-dy * s + dx * 0.18) * 1.8 * speed
     v = (dx * s + dy * 0.18) * 1.8 * speed
     # turbulence
-    u += np.sin(pos[0] * 4 + t * 0.5) * turbulence * 0.5
-    v += np.cos(pos[1] * 4 + t * 0.5) * turbulence * 0.5
+    u += np.sin(pos[0] * 4 + t * 3.0)* turbulence * 0.5
+    v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.5
     return u, v
 
 def get_sensor_readings(model, data, name):
@@ -103,7 +106,7 @@ def main():
                 mujoco.mj_step(model, data)
 
             viewer.sync()
-            update_wind_lines(viewer, data.time)
+            update_wind_lines(viewer, model, data)
 
             time_until_next_step = model.opt.timestep - (time.time() - step_start)
             if time_until_next_step > 0:
