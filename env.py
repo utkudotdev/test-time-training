@@ -11,8 +11,9 @@ NUM_OBSTACLES = 10
 OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
 OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
 
-# Hover thrust per motor (from x2.xml "hover" keyframe)
-HOVER_THRUST = 3.2495625
+# Hover thrust per motor, tuned to hold drone+box at z≈0.3
+# (original keyframe value 3.25 was for drone only; box adds ~2.0 per motor)
+HOVER_THRUST = 5.256
 # Max delta from hover that policy can command
 ACTION_SCALE = 3.0
 
