@@ -12,15 +12,41 @@ def get_sensor_readings(model, data, name):
     dim = model.sensor_dim[sensor_id]
     return data.sensordata[adr : adr + dim]
 
+def update_speed(dt):
+    global speed, target_speed, speed_cooldown
+    speed_cooldown -= dt
+    if speed_cooldown <= 0:
+        target_speed  = np.random.uniform(0.5, 1.5)
+        speed_cooldown = np.random.uniform(2.0, 5.0)
+
+    speed += (target_speed - speed) * 0.01
+
+def update_turbulence(dt):
+    global turbulence, target_turbulence, turbulence_cooldown
+    turbulence_cooldown -= dt
+    if turbulence_cooldown <= 0:
+        target_turbulence  = np.random.uniform(0.0, 1.0)
+        turbulence_cooldown = np.random.uniform(5.0, 10.0)
+
+    turbulence += (target_turbulence - turbulence) * 0.001
 
 GOAL_POSITION = np.array([10.0, 0.0, 2.0])
 NUM_OBSTACLES = 10
 OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
 OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
 
-alpha = 0.4
-prev_speed = rand.uniform(0.5, 2.0)
-prev_turbulence = rand.uniform(0.0, 1.0)
+angle = 0.0
+target_angle = 0.0
+angle_cooldown = 0.0
+prev_angle = rand.uniform(0.0, 2 * np.pi)
+
+target_speed = rand.uniform(0.5, 2.0)
+speed = target_speed
+speed_cooldown = 0.0
+
+target_turbulence = rand.uniform(0.0, 1.0)
+turbulence = target_turbulence
+turbulence_cooldown = 0.0
 
 def build_obstacle_scene() -> MjSpec:
     spec = mujoco.MjSpec.from_file("example.xml")
@@ -55,9 +81,8 @@ def build_obstacle_scene() -> MjSpec:
 
     return spec
 
-
 def main():
-    global prev_speed, prev_turbulence
+    global angle_cooldown, angle, target_angle, prev_speed, prev_turbulence, speed, target_speed, speed_cooldown
     spec = build_obstacle_scene()
     model = spec.compile()
     data = mujoco.MjData(model)
@@ -82,11 +107,12 @@ def main():
             _, wind_field = wind.WIND_MODES[wind_mode]
 
             if not paused:
-                speed = prev_speed * alpha + rand.uniform(0.5, 2.0) * (1 - alpha)
-                turbulence = prev_turbulence * alpha + rand.uniform(0.0, 1.0) * (1 - alpha)
+                angle, target_angle, angle_cooldown = wind.update_field_angle(angle, target_angle, angle_cooldown, model.opt.timestep)
+                update_speed(model.opt.timestep)
+                update_turbulence(model.opt.timestep)
                 for body_id in range(1, model.nbody):
                     pos = data.xpos[body_id]
-                    fx, fy = wind_field(pos, data.time, speed=speed, turbulence=turbulence)
+                    fx, fy = wind_field(pos, data.time, speed=speed, turbulence=turbulence, field_angle=angle)
                     data.xfrc_applied[body_id, 0] = fx
                     data.xfrc_applied[body_id, 1] = fy
 
@@ -102,7 +128,7 @@ def main():
                 mujoco.mj_step(model, data)
 
             viewer.sync()
-            wind.update_wind_lines(viewer, model, wind_field, data)
+            wind.update_wind_lines(viewer, model, wind_field, data, speed, turbulence, angle)
 
             time_until_next_step = model.opt.timestep - (time.time() - step_start)
             if time_until_next_step > 0:
