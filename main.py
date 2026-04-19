@@ -1,4 +1,5 @@
 import mujoco
+from mujoco._specs import MjSpec
 import mujoco.viewer
 import time
 import numpy as np
@@ -8,6 +9,7 @@ GRID_N  = 10
 GRID_W  = 2.0
 GRID_H = 1.5
 SCALE   = 0.15
+
 
 def draw_line(scn, from_pos, to_pos, rgba, width=0.005):
     if scn.ngeom >= scn.maxgeom:
@@ -26,7 +28,7 @@ def draw_line(scn, from_pos, to_pos, rgba, width=0.005):
         mujoco.mjtGeom.mjGEOM_LINE,
         width,
         np.array(from_pos, dtype=np.float64),
-        np.array(to_pos,   dtype=np.float64),
+        np.array(to_pos, dtype=np.float64),
     )
     scn.ngeom += 1
 
@@ -65,16 +67,57 @@ def wind_field(pos, t, speed=1.0, turbulence=0.3):
     v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.5
     return u, v
 
+
 def get_sensor_readings(model, data, name):
     sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, name)
     adr = model.sensor_adr[sensor_id]
     dim = model.sensor_dim[sensor_id]
     return data.sensordata[adr : adr + dim]
 
-def main():
-    with open("example.xml") as f:
-        model = mujoco.MjModel.from_xml_string(f.read())
 
+GOAL_POSITION = np.array([10.0, 0.0, 2.0])
+NUM_OBSTACLES = 10
+OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
+OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
+
+
+def build_obstacle_scene() -> MjSpec:
+    spec = mujoco.MjSpec.from_file("example.xml")
+
+    spec.worldbody.add_geom(
+        name="goal",
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        size=[0.1],
+        rgba=[0.0, 0.7, 0.3, 0.5],
+        pos=GOAL_POSITION.tolist(),
+        contype=0,
+        conaffinity=0,
+    )
+
+    rng = np.random.default_rng()
+    obs_pos = rng.uniform(
+        low=OBSTACLE_REGION[0], high=OBSTACLE_REGION[1], size=(NUM_OBSTACLES, 3)
+    )
+    obs_size = rng.uniform(
+        low=OBSTACLE_RADIUS_RANGE[0], high=OBSTACLE_RADIUS_RANGE[1], size=NUM_OBSTACLES
+    )
+
+    for pos, radius in zip(obs_pos, obs_size):
+        spec.worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=[radius],
+            rgba=[1.0, 0.0, 0.0, 0.5],
+            pos=pos.tolist(),
+            contype=0,
+            conaffinity=0,
+        )
+
+    return spec
+
+
+def main():
+    spec = build_obstacle_scene()
+    model = spec.compile()
     data = mujoco.MjData(model)
 
     paused = False
@@ -99,9 +142,9 @@ def main():
 
                 data.ctrl = 6 * np.ones(4)
 
-                gyro   = get_sensor_readings(model, data, "gyro").copy()
-                accel  = get_sensor_readings(model, data, "accelerometer").copy()
-                quat   = get_sensor_readings(model, data, "framequat").copy()
+                gyro = get_sensor_readings(model, data, "gyro").copy()
+                accel = get_sensor_readings(model, data, "accelerometer").copy()
+                quat = get_sensor_readings(model, data, "framequat").copy()
 
                 mujoco.mj_step(model, data)
 
