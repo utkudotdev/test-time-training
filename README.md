@@ -18,9 +18,9 @@ uv sync
   - Reward: distance to goal + delivery bonus - control penalty
 
 - **train.py** — Train PPO agent from scratch
-  - 500k timesteps (improved hyperparameters)
-  - Saves model to `models/ppo_delivery.zip`
-  - Takes ~20-30 minutes
+  - 1M timesteps, 8 parallel envs (SubprocVecEnv)
+  - Saves best + checkpoints to `models/`
+  - Tensorboard logs to `logs/`
 
 - **eval.py** — Evaluate trained agent (headless)
   - Runs 5 episodes
@@ -68,9 +68,11 @@ Runs 5 evaluation episodes with the trained policy (deterministic actions).
 
 **Reward:**
 
-- `-0.1 * distance_to_goal` — incentivize proximity
-- `+1.0` — bonus when box within 0.15m of goal
-- `-0.001 * sum(control^2)` — fuel cost
+- `+5.0 * progress` — progress toward goal (delta distance)
+- `+1/(1+dist)` — dense proximity bonus
+- `+10` — delivery bonus (box within 0.5m of goal)
+- `-0.1 * tilt` — keep upright penalty
+- `-0.001 * (ctrl - hover)^2` — effort penalty
 
 **Termination:**
 
