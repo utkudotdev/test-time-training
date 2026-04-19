@@ -4,7 +4,7 @@ import mujoco.viewer
 import time
 import numpy as np
 import wind_sim as wind
-
+import random as rand
 
 def get_sensor_readings(model, data, name):
     sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, name)
@@ -18,6 +18,9 @@ NUM_OBSTACLES = 10
 OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
 OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
 
+alpha = 0.4
+prev_speed = rand.uniform(0.5, 2.0)
+prev_turbulence = rand.uniform(0.0, 1.0)
 
 def build_obstacle_scene() -> MjSpec:
     spec = mujoco.MjSpec.from_file("example.xml")
@@ -54,29 +57,38 @@ def build_obstacle_scene() -> MjSpec:
 
 
 def main():
+    global prev_speed, prev_turbulence
     spec = build_obstacle_scene()
     model = spec.compile()
     data = mujoco.MjData(model)
 
     paused = False
+    wind_mode = "1"
 
     def key_callback(keycode):
+        nonlocal paused, wind_mode
         if chr(keycode) == " ":
-            nonlocal paused
             paused = not paused
+        elif chr(keycode) in wind.WIND_MODES:
+            wind_mode = chr(keycode)
+            name, _ = wind.WIND_MODES[chr(keycode)]
+            print(f"[wind] switched to: {name}")
 
     with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as viewer:
         viewer.sync()
 
         while viewer.is_running():
             step_start = time.time()
+            _, wind_field = wind.WIND_MODES[wind_mode]
 
             if not paused:
+                speed = prev_speed * alpha + rand.uniform(0.5, 2.0) * (1 - alpha)
+                turbulence = prev_turbulence * alpha + rand.uniform(0.0, 1.0) * (1 - alpha)
                 for body_id in range(1, model.nbody):
                     pos = data.xpos[body_id]
-                    fx, fy = wind.wind_field(pos, data.time)
-                    data.xfrc_applied[body_id, 0] = 20 * fx
-                    data.xfrc_applied[body_id, 1] = 20 * fy
+                    fx, fy = wind_field(pos, data.time, speed=speed, turbulence=turbulence)
+                    data.xfrc_applied[body_id, 0] = fx
+                    data.xfrc_applied[body_id, 1] = fy
 
                 data.ctrl = 6 * np.ones(4)
 
@@ -84,10 +96,13 @@ def main():
                 accel = get_sensor_readings(model, data, "accelerometer").copy()
                 quat = get_sensor_readings(model, data, "framequat").copy()
 
+                prev_speed = speed
+                prev_turbulence = turbulence
+
                 mujoco.mj_step(model, data)
 
             viewer.sync()
-            wind.update_wind_lines(viewer, model, data)
+            wind.update_wind_lines(viewer, model, wind_field, data)
 
             time_until_next_step = model.opt.timestep - (time.time() - step_start)
             if time_until_next_step > 0:

@@ -30,7 +30,7 @@ def draw_line(scn, from_pos, to_pos, rgba, width=0.005):
     )
     scn.ngeom += 1
 
-def update_wind_lines(viewer, model, data):
+def update_wind_lines(viewer, model, wind_field, data):
     with viewer.lock():
         scn = viewer.user_scn
         scn.ngeom = 0
@@ -51,10 +51,10 @@ def update_wind_lines(viewer, model, data):
                     c = np.clip(speed / 1.5, 0, 1)
                     rgba = [c, 0.3, 1.0 - c, 1.0]
 
-                    draw_line(scn, tail, tip, rgba, width=0.005)
+                    draw_line(scn, tail, tip, rgba, width=0.05)
 
 
-def wind_field(pos, t, speed=1.0, turbulence=0.3):
+def wind_calm(pos, t, speed=1.0, turbulence=0.3):
     cx, cy = 0.0, 0.0
     dx, dy = pos[0] - cx, pos[1] - cy
     r = np.sqrt(dx * dx + dy * dy) + 0.001
@@ -64,3 +64,58 @@ def wind_field(pos, t, speed=1.0, turbulence=0.3):
     u += np.sin(pos[0] * 4 + t * 3.0)* turbulence * 0.5
     v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.5
     return u, v
+
+def wind_cold_front(pos, t, speed=1.0, turbulence=0.3):
+    wave = np.sin(pos[0] * np.pi * 2 + t * 0.4) * 0.3
+    front_y = wave
+    u = speed * (1.4 - 0.4 * np.tanh((pos[1] - front_y) * 8))
+    v = np.sin(pos[0] * np.pi * 3 + t * 0.3) * 0.3 * speed
+    v += -0.25 * speed if pos[1] > front_y else 0.12 * speed
+    u += np.sin(pos[0] * 4 + t * 3.0) * turbulence * 0.5
+    v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.5
+    return u, v
+
+def wind_squall(pos, t, speed=1.0, turbulence=0.3):
+    line_x = (pos[0] - t * 0.3) % 2.0 - 1.0
+    sq_w = 0.12
+    front_str = np.exp(-(line_x * line_x) / (sq_w * sq_w))
+    u = speed * (1.6 - front_str * 0.8)
+    v = pos[1] * front_str * 2.5 * speed
+    v += np.sin(pos[1] * np.pi * 4 + t) * 0.15 * speed
+    u += np.sin(pos[0] * 4 + t * 3.0) * turbulence * 0.5
+    v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.5
+    return u, v
+
+def wind_thermal(pos, t, speed=1.0, turbulence=0.3):
+    # rising columns of hot air at fixed locations
+    thermals = [(-0.6, -0.5), (0.4, 0.3), (0.8, -0.7)]
+    u = 0.08 * speed
+    v = 0.0
+    for tx, ty in thermals:
+        dx, dy = pos[0] - tx, pos[1] - ty
+        r2 = dx*dx + dy*dy
+        bubble = np.exp(-r2 / 0.08)
+        u += dx * bubble * 0.5 * speed
+        v += (bubble * -1.4 + dy * bubble * 0.4) * speed
+    u += np.sin(pos[0] * 4 + t * 3.0) * turbulence * 0.5
+    v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.5
+    return u, v
+
+def wind_jet_stream(pos, t, speed=1.0, turbulence=0.3):
+    # fast narrow band of wind with Rossby wave meanders
+    jet_y = 0.0 + np.sin(pos[0] * np.pi * 2.5 + t * 0.25) * 0.4
+    w = 0.15
+    strength = np.exp(-((pos[1] - jet_y) ** 2) / (2 * w * w))
+    u = (2.5 + np.sin(pos[0] * 4 + t * 0.2) * 0.3) * speed * strength
+    v = np.cos(pos[0] * np.pi * 2.5 + t * 0.25) * 0.6 * speed * strength
+    u += np.sin(pos[0] * 4 + t * 3.0) * turbulence * 0.3
+    v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.3
+    return u, v
+
+WIND_MODES = {
+    "1": ("calm", wind_calm),
+    "2": ("cold_front", wind_cold_front),
+    "3": ("squall", wind_squall),
+    "4": ("thermal", wind_thermal), 
+    "5": ("jet_stream", wind_jet_stream)
+}
