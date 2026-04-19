@@ -1,4 +1,4 @@
-"""Evaluate trained PPO agent for package delivery."""
+"""Evaluate trained PPO agent for package delivery (headless)."""
 
 from stable_baselines3 import PPO
 from env import DroneDeliveryEnv
@@ -7,8 +7,8 @@ import numpy as np
 # Load trained model
 model = PPO.load("models/ppo_delivery")
 
-# Create environment with rendering
-env = DroneDeliveryEnv(render_mode="human", max_episode_steps=1000)
+# Create environment (headless)
+env = DroneDeliveryEnv(max_episode_steps=1000)
 
 # Run episodes
 num_episodes = 5

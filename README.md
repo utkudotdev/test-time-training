@@ -18,12 +18,18 @@ uv sync
   - Reward: distance to goal + delivery bonus - control penalty
 
 - **train.py** — Train PPO agent from scratch
-  - 100k timesteps training
+  - 500k timesteps (improved hyperparameters)
   - Saves model to `models/ppo_delivery.zip`
+  - Takes ~20-30 minutes
 
-- **eval.py** — Evaluate trained agent
-  - Renders 5 episodes
+- **eval.py** — Evaluate trained agent (headless)
+  - Runs 5 episodes
   - Shows final reward statistics
+
+- **visualize_mujoco.py** — Visualize trained agent in MuJoCo viewer
+  - Run with `uv run mjpython visualize_mujoco.py`
+  - Native MuJoCo rendering (full fidelity)
+  - Press space to pause, R to reset
 
 - **main.py** — Interactive viewer (not for training)
   - Run with `uv run mjpython main.py`
@@ -48,7 +54,7 @@ This will:
 uv run python eval.py
 ```
 
-Renders 5 evaluation episodes with the trained policy (deterministic actions).
+Runs 5 evaluation episodes with the trained policy (deterministic actions).
 
 ## Environment Details
 

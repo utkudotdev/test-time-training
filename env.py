@@ -17,8 +17,6 @@ class DroneDeliveryEnv(gym.Env):
             self.model = mujoco.MjModel.from_xml_string(f.read())
         self.data = mujoco.MjData(self.model)
 
-        self.viewer = None
-
         # Action space: 4 thrust motors, range [0, 13]
         self.action_space = gym.spaces.Box(
             low=0, high=13, shape=(4,), dtype=np.float32
@@ -76,15 +74,20 @@ class DroneDeliveryEnv(gym.Env):
         drone_to_goal = np.linalg.norm(drone_pos - goal_pos)
         box_to_goal = np.linalg.norm(box_pos - goal_pos)
 
+        # Survival bonus (encourage staying alive)
+        reward = 0.1
+
         # Main reward: negative distance (encourage getting closer)
-        reward = -0.1 * drone_to_goal
+        reward -= 0.05 * drone_to_goal
 
         # Bonus for box proximity to goal (delivery task)
         if box_to_goal < 0.5:
-            reward += 1.0  # Bonus for successful delivery
+            reward += 5.0  # Large bonus for successful delivery
+        elif box_to_goal < 1.0:
+            reward += 1.0  # Smaller bonus for getting close
 
         # Control penalty (fuel cost)
-        reward -= 0.001 * np.sum(self.data.ctrl**2)
+        reward -= 0.0005 * np.sum(self.data.ctrl**2)
 
         return reward
 
@@ -140,10 +143,6 @@ class DroneDeliveryEnv(gym.Env):
         truncated = self.step_count >= self.max_episode_steps
 
         info = {"step_count": self.step_count}
-
-        if self.render_mode == "human":
-            self.render()
-
         return obs, reward, terminated, truncated, info
 
     def _wind_field(self, pos, t, speed=1.0, turbulence=0.3):
@@ -159,12 +158,12 @@ class DroneDeliveryEnv(gym.Env):
         return u, v
 
     def render(self):
-        """Render environment using MuJoCo viewer."""
-        if self.viewer is None:
-            self.viewer = mujoco.Viewer(self.model, self.data)
-        self.viewer.sync()
+        """Render is not implemented for headless training.
+
+        For interactive visualization, use main.py with mjpython on macOS.
+        """
+        pass
 
     def close(self):
-        """Close viewer."""
-        if self.viewer is not None:
-            self.viewer.close()
+        """Close environment."""
+        pass
