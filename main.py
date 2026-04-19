@@ -3,6 +3,7 @@ import mujoco.viewer
 import time
 import numpy as np
 
+
 def draw_line(scn, from_pos, to_pos, rgba, width=0.005):
     if scn.ngeom >= scn.maxgeom:
         return
@@ -20,12 +21,15 @@ def draw_line(scn, from_pos, to_pos, rgba, width=0.005):
         mujoco.mjtGeom.mjGEOM_LINE,
         width,
         np.array(from_pos, dtype=np.float64),
-        np.array(to_pos,   dtype=np.float64),
+        np.array(to_pos, dtype=np.float64),
     )
     scn.ngeom += 1
-GRID_N  = 10
-GRID_W  = 2.0
-SCALE   = 0.15   # wind vector → line length
+
+
+GRID_N = 10
+GRID_W = 2.0
+SCALE = 0.15  # wind vector → line length
+
 
 def update_wind_lines(viewer, t):
     with viewer.lock():
@@ -39,16 +43,17 @@ def update_wind_lines(viewer, t):
             for y in ys:
                 pos = np.array([x, y, 0.1])  # slight z lift off ground
                 u, v = wind_field(pos, t)
-                speed = np.sqrt(u*u + v*v)
+                speed = np.sqrt(u * u + v * v)
 
                 tail = pos
-                tip  = pos + np.array([u, v, 0.0]) * SCALE
+                tip = pos + np.array([u, v, 0.0]) * SCALE
 
                 # color: blue (slow) → red (fast)
                 c = np.clip(speed / 1.5, 0, 1)
                 rgba = [c, 0.3, 1.0 - c, 0.8]
 
                 draw_line(scn, tail, tip, rgba)
+
 
 def wind_field(pos, t, speed=1.0, turbulence=0.3):
     cx, cy = 0.0, 0.0
@@ -62,11 +67,13 @@ def wind_field(pos, t, speed=1.0, turbulence=0.3):
     v += np.cos(pos[1] * 4 + t * 0.5) * turbulence * 0.5
     return u, v
 
+
 def get_sensor_readings(model, data, name):
     sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, name)
     adr = model.sensor_adr[sensor_id]
     dim = model.sensor_dim[sensor_id]
     return data.sensordata[adr : adr + dim]
+
 
 def main():
     with open("example.xml") as f:
@@ -100,9 +107,9 @@ def main():
 
                 data.ctrl = 6 * np.ones(4)
 
-                gyro   = get_sensor_readings(model, data, "gyro").copy()
-                accel  = get_sensor_readings(model, data, "accelerometer").copy()
-                quat   = get_sensor_readings(model, data, "framequat").copy()
+                gyro = get_sensor_readings(model, data, "gyro").copy()
+                accel = get_sensor_readings(model, data, "accelerometer").copy()
+                quat = get_sensor_readings(model, data, "framequat").copy()
 
                 mujoco.mj_step(model, data)
 
