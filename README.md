@@ -18,12 +18,18 @@ uv sync
   - Reward: distance to goal + delivery bonus - control penalty
 
 - **train.py** — Train PPO agent from scratch
-  - 100k timesteps training
-  - Saves model to `models/ppo_delivery.zip`
+  - 1M timesteps, 8 parallel envs (SubprocVecEnv)
+  - Saves best + checkpoints to `models/`
+  - Tensorboard logs to `logs/`
 
-- **eval.py** — Evaluate trained agent
-  - Renders 5 episodes
+- **eval.py** — Evaluate trained agent (headless)
+  - Runs 5 episodes
   - Shows final reward statistics
+
+- **visualize_mujoco.py** — Visualize trained agent in MuJoCo viewer
+  - Run with `uv run mjpython visualize_mujoco.py`
+  - Native MuJoCo rendering (full fidelity)
+  - Press space to pause, R to reset
 
 - **main.py** — Interactive viewer (not for training)
   - Run with `uv run mjpython main.py`
@@ -48,7 +54,7 @@ This will:
 uv run python eval.py
 ```
 
-Renders 5 evaluation episodes with the trained policy (deterministic actions).
+Runs 5 evaluation episodes with the trained policy (deterministic actions).
 
 ## Environment Details
 
@@ -62,9 +68,11 @@ Renders 5 evaluation episodes with the trained policy (deterministic actions).
 
 **Reward:**
 
-- `-0.1 * distance_to_goal` — incentivize proximity
-- `+1.0` — bonus when box within 0.15m of goal
-- `-0.001 * sum(control^2)` — fuel cost
+- `+5.0 * progress` — progress toward goal (delta distance)
+- `+1/(1+dist)` — dense proximity bonus
+- `+10` — delivery bonus (box within 0.5m of goal)
+- `-0.1 * tilt` — keep upright penalty
+- `-0.001 * (ctrl - hover)^2` — effort penalty
 
 **Termination:**
 
