@@ -30,7 +30,7 @@ def make_env(rank, seed=0, with_obstacles=False):
         env = DroneDeliveryEnv(
             max_episode_steps=1000,
             with_obstacles=with_obstacles,
-            with_wind=True,
+            with_wind=False,
             seed=seed + rank,
         )
         return env

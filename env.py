@@ -91,9 +91,7 @@ class DroneDeliveryEnv(gym.Env):
             low=-np.inf, high=np.inf, shape=(39,), dtype=np.float32
         )
 
-        self.goal_geom = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_GEOM, "goal"
-        )
+        self.goal_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "goal")
         self._prev_drone_to_goal = None
 
     def _get_sensor(self, name):
@@ -141,7 +139,9 @@ class DroneDeliveryEnv(gym.Env):
 
         # Orientation penalty (keep drone upright)
         drone_quat = self.data.qpos[3:7]
-        z_axis_world = 2 * (drone_quat[1] * drone_quat[3] + drone_quat[0] * drone_quat[2])
+        z_axis_world = 2 * (
+            drone_quat[1] * drone_quat[3] + drone_quat[0] * drone_quat[2]
+        )
         tilt = 1.0 - np.clip(z_axis_world, -1, 1) ** 2
         reward -= 0.1 * tilt
 
@@ -175,6 +175,16 @@ class DroneDeliveryEnv(gym.Env):
         self.step_count = 0
 
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.model.key("hover").id)
+
+        # Start drone in the air at 1.5m with box hanging below it.
+        # Tendon range [0, 0.6]: package1 at drone pos (0,0,1.5),
+        # package2 at box pos (0,0,0.8)+(0,0,0.1)=(0,0,0.9) → distance 0.6 (taut).
+        self.data.qpos[:3] = [0.0, 0.0, 1.5]   # drone position
+        self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]  # drone upright
+        self.data.qpos[7:10] = [0.0, 0.0, 0.8]  # box position (0.7m below drone)
+        self.data.qpos[10:14] = [1.0, 0.0, 0.0, 0.0]  # box upright
+        self.data.qvel[:] = 0.0
+
         mujoco.mj_forward(self.model, self.data)
 
         drone_pos = self.data.qpos[:3]
@@ -199,7 +209,9 @@ class DroneDeliveryEnv(gym.Env):
 
         mujoco.mj_step(self.model, self.data)
 
-        reward, self._prev_drone_to_goal = self._compute_reward(self._prev_drone_to_goal)
+        reward, self._prev_drone_to_goal = self._compute_reward(
+            self._prev_drone_to_goal
+        )
         terminated, reason = self._check_termination()
         truncated = self.step_count >= self.max_episode_steps
 
