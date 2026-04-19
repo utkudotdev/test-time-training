@@ -74,6 +74,8 @@ def main():
 
     data = mujoco.MjData(model)
 
+    goal = data.geom("goal")
+
     paused = False
 
     def key_callback(keycode):
@@ -86,6 +88,8 @@ def main():
 
         while viewer.is_running():
             step_start = time.time()
+
+            goal_pos = goal.xpos
 
             if not paused:
                 for body_id in range(1, model.nbody):
