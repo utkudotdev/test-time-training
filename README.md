@@ -33,8 +33,10 @@ uv sync
 
 - **main.py** — Interactive viewer (not for training)
   - Run with `uv run mjpython main.py`
-  - Shows wind field visualization
+  - Shows wind field visualization:
+    - Keybinds for toggling wind conditions: calm **[1]**, cold_front **[2]**, squall **[3]**, thermal **[4]**, jet stream **[5]**, no wind **[6]** 
   - Press space to pause/resume
+
 
 ## Training
 
