@@ -1,4 +1,5 @@
 import mujoco
+from mujoco._specs import MjSpec
 import mujoco.viewer
 import time
 import numpy as np
@@ -75,13 +76,50 @@ def get_sensor_readings(model, data, name):
     return data.sensordata[adr : adr + dim]
 
 
+GOAL_POSITION = np.array([10.0, 0.0, 2.0])
+NUM_OBSTACLES = 10
+OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
+OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
+
+
+def build_obstacle_scene() -> MjSpec:
+    spec = mujoco.MjSpec.from_file("example.xml")
+
+    spec.worldbody.add_geom(
+        name="goal",
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        size=[0.1],
+        rgba=[0.0, 0.7, 0.3, 0.5],
+        pos=GOAL_POSITION.tolist(),
+        contype=0,
+        conaffinity=0,
+    )
+
+    rng = np.random.default_rng()
+    obs_pos = rng.uniform(
+        low=OBSTACLE_REGION[0], high=OBSTACLE_REGION[1], size=(NUM_OBSTACLES, 3)
+    )
+    obs_size = rng.uniform(
+        low=OBSTACLE_RADIUS_RANGE[0], high=OBSTACLE_RADIUS_RANGE[1], size=NUM_OBSTACLES
+    )
+
+    for pos, radius in zip(obs_pos, obs_size):
+        spec.worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=[radius],
+            rgba=[1.0, 0.0, 0.0, 0.5],
+            pos=pos.tolist(),
+            contype=0,
+            conaffinity=0,
+        )
+
+    return spec
+
+
 def main():
-    with open("example.xml") as f:
-        model = mujoco.MjModel.from_xml_string(f.read())
-
+    spec = build_obstacle_scene()
+    model = spec.compile()
     data = mujoco.MjData(model)
-
-    goal = data.geom("goal")
 
     paused = False
 
@@ -95,8 +133,6 @@ def main():
 
         while viewer.is_running():
             step_start = time.time()
-
-            goal_pos = goal.xpos
 
             if not paused:
                 for body_id in range(1, model.nbody):
