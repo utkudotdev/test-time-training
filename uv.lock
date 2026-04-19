@@ -178,6 +178,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "mujoco" },
+    { name = "numpy" },
 ]
 
 [package.dev-dependencies]
@@ -186,7 +187,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "mujoco", specifier = ">=3.7.0" }]
+requires-dist = [
+    { name = "mujoco", specifier = ">=3.7.0" },
+    { name = "numpy", specifier = ">=2.4.4" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pybind11-stubgen", specifier = ">=2.5.5" }]

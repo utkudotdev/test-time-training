@@ -51,9 +51,9 @@
       <site name="thrust4" pos=".14 -.18 .08"/>
       <site name="package1" pos="0 0 0" size="0.01"/>
     </body>
-    <body pos="0 0 0.1">
+    <body name="box" pos="0 0 0.1">
       <joint type="free"/>
-      <geom size="0.1 0.1 0.1" type="box"/>
+      <geom size="0.1 0.1 0.1" type="box" mass="1.0" />
       <site name="package2" pos="0 0 0.1" size="0.01"/>
     </body>
   </worldbody>

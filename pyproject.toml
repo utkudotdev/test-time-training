@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["mujoco>=3.7.0"]
+dependencies = [
+    "mujoco>=3.7.0",
+    "numpy>=2.4.4",
+]
 
 [dependency-groups]
 dev = ["pybind11-stubgen>=2.5.5"]
