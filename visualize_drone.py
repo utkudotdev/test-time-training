@@ -6,8 +6,8 @@ Run: uv run mjpython visualize_drone.py
 import mujoco, mujoco.viewer, time, os
 import numpy as np
 from stable_baselines3 import PPO
-import wind_sim as wind
-from env_drone import DroneEnv, HOVER_THRUST, ACTION_SCALE, GOAL_POSITION
+from env_drone import DroneEnv, HOVER_THRUST, GOAL_POSITION
+from controller import cascaded_control
 
 
 def get_sensor(model, data, name):
@@ -17,16 +17,30 @@ def get_sensor(model, data, name):
     return data.sensordata[adr : adr + dim].copy()
 
 
-def build_obs(model, data, goal_geom_id):
+def rotate_by_conj_quat(v, q):
+    w, x, y, z = q
+    R = np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y + w * z),     2 * (x * z - w * y)],
+        [2 * (x * y - w * z),     1 - 2 * (x * x + z * z), 2 * (y * z + w * x)],
+        [2 * (x * z + w * y),     2 * (y * z - w * x),     1 - 2 * (x * x + y * y)],
+    ])
+    return R @ v
+
+
+def build_obs(model, data, goal_geom_id, last_action):
     drone_pos = data.qpos[:3].copy()
+    quat = data.qpos[3:7].copy()
     goal_pos = data.geom_xpos[goal_geom_id].copy()
-    goal_vec = goal_pos - drone_pos
+    goal_vec_body = rotate_by_conj_quat(goal_pos - drone_pos, quat)
+    lin_vel_body = rotate_by_conj_quat(data.qvel[:3].copy(), quat)
     return np.concatenate([
-        data.qpos[:7], data.qvel[:6],
+        [drone_pos[2]],
+        quat,
+        lin_vel_body,
         get_sensor(model, data, "body_gyro"),
         get_sensor(model, data, "body_linacc"),
-        get_sensor(model, data, "body_quat"),
-        goal_vec,
+        goal_vec_body,
+        last_action,
     ]).astype(np.float32)
 
 
@@ -70,14 +84,17 @@ def main():
         viewer.cam.fixedcamid = cam_id
         viewer.sync()
         step = 0
+        last_action = np.zeros(4, dtype=np.float32)
         while viewer.is_running():
             t0 = time.time()
             if not paused:
-                obs = build_obs(model, data, goal_geom)
+                obs = build_obs(model, data, goal_geom, last_action)
                 action, _ = policy.predict(obs, deterministic=True)
-                ctrl = HOVER_THRUST + action.astype(np.float64) * ACTION_SCALE
-                data.ctrl = np.clip(ctrl, 0.0, 13.0)
+                quat = data.qpos[3:7]
+                gyro = get_sensor(model, data, "body_gyro")
+                data.ctrl = cascaded_control(quat, gyro, action, HOVER_THRUST)
                 mujoco.mj_step(model, data)
+                last_action = action.astype(np.float32)
                 step += 1
                 if step % 100 == 0:
                     pos = data.qpos[:3]
