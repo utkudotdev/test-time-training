@@ -4,6 +4,7 @@ import gymnasium as gym
 import numpy as np
 import mujoco
 import wind_sim as wind
+from controller import cascaded_control
 
 
 GOAL_POSITION = np.array([10.0, 0.0, 2.0])
@@ -11,11 +12,9 @@ NUM_OBSTACLES = 10
 OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
 OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
 
-# Hover thrust per motor, tuned to hold drone+box at z≈0.3
-# (original keyframe value 3.25 was for drone only; box adds ~2.0 per motor)
-HOVER_THRUST = 5.256
-# Max delta from hover that policy can command
-ACTION_SCALE = 3.0
+# Calibrated hover thrust for drone + suspended box system (verified by binary search).
+# At this per-motor thrust with cascaded PD control, drone+box holds altitude.
+HOVER_THRUST = 5.702
 
 
 def build_scene_spec(seed=None, with_obstacles=True):
@@ -69,11 +68,18 @@ class DroneDeliveryEnv(gym.Env):
         max_episode_steps=1000,
         with_obstacles=False,
         with_wind=True,
+        wind_type="calm",   # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
+        wind_speed=1.0,
+        wind_turbulence=0.3,
         seed=None,
     ):
         self.max_episode_steps = max_episode_steps
         self.with_obstacles = with_obstacles
         self.with_wind = with_wind
+        self.wind_speed = wind_speed
+        self.wind_turbulence = wind_turbulence
+        self._wind_field_fn = getattr(wind, f"wind_{wind_type}")
+        self._wind_angle = 0.0
         self.step_count = 0
 
         # Build scene and compile
@@ -81,18 +87,20 @@ class DroneDeliveryEnv(gym.Env):
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
 
-        # Action: residual around hover. Policy outputs [-1, 1], scaled by ACTION_SCALE.
+        # Cascaded action: [thrust_delta, roll, pitch, yaw] in [-1, 1]
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
 
-        # Observation: drone qpos(7) + qvel(6) + box qpos(7) + qvel(6) + sensors(10) + goal(3)
+        # Obs (27D): z(1) + quat(4) + lin_vel_body(3) + gyro(3) + accel(3)
+        #          + box_rel_pos_body(3) + box_rel_vel_body(3) + goal_body(3) + last_action(4)
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(39,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(27,), dtype=np.float32
         )
 
         self.goal_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "goal")
-        self._prev_drone_to_goal = None
+        self._prev_drone_to_goal = 0.0
+        self._last_action = np.zeros(4, dtype=np.float32)
 
     def _get_sensor(self, name):
         sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
@@ -100,53 +108,80 @@ class DroneDeliveryEnv(gym.Env):
         dim = self.model.sensor_dim[sensor_id]
         return self.data.sensordata[adr : adr + dim].copy()
 
+    @staticmethod
+    def _rotate_by_conj_quat(v, q):
+        """Rotate v by conjugate of quat q=(w,x,y,z) — world → body frame."""
+        w, x, y, z = q
+        R = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y + w * z),     2 * (x * z - w * y)],
+            [2 * (x * y - w * z),     1 - 2 * (x * x + z * z), 2 * (y * z + w * x)],
+            [2 * (x * z + w * y),     2 * (y * z - w * x),     1 - 2 * (x * x + y * y)],
+        ])
+        return R @ v
+
     def _get_obs(self):
-        drone_qpos = self.data.qpos[:7].copy()
-        drone_qvel = self.data.qvel[:6].copy()
-        box_qpos = self.data.qpos[7:14].copy()
-        box_qvel = self.data.qvel[6:12].copy()
-        gyro = self._get_sensor("body_gyro")
-        accel = self._get_sensor("body_linacc")
-        quat = self._get_sensor("body_quat")
+        drone_pos = self.data.qpos[:3].copy()
+        quat = self.data.qpos[3:7].copy()
+        box_pos = self.data.qpos[7:10].copy()
         goal_pos = self.data.geom_xpos[self.goal_geom].copy()
-        return np.concatenate(
-            [drone_qpos, drone_qvel, box_qpos, box_qvel, gyro, accel, quat, goal_pos]
-        ).astype(np.float32)
+
+        lin_vel_body = self._rotate_by_conj_quat(self.data.qvel[:3].copy(), quat)
+        box_rel_pos_body = self._rotate_by_conj_quat(box_pos - drone_pos, quat)
+        box_rel_vel_body = self._rotate_by_conj_quat(
+            self.data.qvel[6:9].copy() - self.data.qvel[:3].copy(), quat
+        )
+        goal_vec_body = self._rotate_by_conj_quat(goal_pos - drone_pos, quat)
+
+        return np.concatenate([
+            [drone_pos[2]],
+            quat,
+            lin_vel_body,
+            self._get_sensor("body_gyro"),
+            self._get_sensor("body_linacc"),
+            box_rel_pos_body,
+            box_rel_vel_body,
+            goal_vec_body,
+            self._last_action,
+        ]).astype(np.float32)
 
     def _compute_reward(self, drone_to_goal_prev):
         drone_pos = self.data.qpos[:3]
         goal_pos = self.data.geom_xpos[self.goal_geom]
         box_pos = self.data.qpos[7:10]
 
-        drone_to_goal = np.linalg.norm(drone_pos - goal_pos)
-        box_to_goal = np.linalg.norm(box_pos - goal_pos)
+        drone_to_goal = float(np.linalg.norm(drone_pos - goal_pos))
+        box_to_goal = float(np.linalg.norm(box_pos - goal_pos))
 
-        # Dense shaping: progress toward goal (positive when getting closer)
+        # Progress reward: strong signal for moving the drone toward the goal
         progress = drone_to_goal_prev - drone_to_goal
-        reward = 5.0 * progress
+        reward = 10.0 * progress
 
-        # Small survival bonus to avoid learning to crash quickly
-        reward += 0.02
+        # Survival bonus
+        reward += 0.1
 
-        # Proximity bonuses (dense, not sparse)
-        reward += 1.0 / (1.0 + drone_to_goal)
+        # Exponential proximity — useful gradient at all distances
+        reward += 2.0 * np.exp(-drone_to_goal / 3.0)
 
-        # Delivery bonus (box near goal)
-        if box_to_goal < 0.5:
-            reward += 10.0
-        elif box_to_goal < 1.5:
-            reward += 1.0 / (1.0 + box_to_goal)
+        # Upright penalty (safety net on top of PD controller)
+        _, qx, qy, _ = self.data.qpos[3:7]
+        body_z_world = 1.0 - 2.0 * (qx * qx + qy * qy)
+        tilt = 1.0 - np.clip(body_z_world, -1.0, 1.0)
+        reward -= 10.0 * tilt
 
-        # Orientation penalty (keep drone upright)
-        drone_quat = self.data.qpos[3:7]
-        z_axis_world = 2 * (
-            drone_quat[1] * drone_quat[3] + drone_quat[0] * drone_quat[2]
-        )
-        tilt = 1.0 - np.clip(z_axis_world, -1, 1) ** 2
-        reward -= 0.1 * tilt
+        # Damp angular velocity
+        reward -= 0.05 * np.linalg.norm(self.data.qvel[3:6])
 
-        # Small control effort penalty
-        reward -= 0.001 * np.sum((self.data.ctrl - HOVER_THRUST) ** 2)
+        # Stillness near goal
+        if drone_to_goal < 1.5:
+            reward -= 0.5 * (1.5 - drone_to_goal) * np.linalg.norm(self.data.qvel[:3])
+
+        # Tiered bonuses for drone near goal
+        if drone_to_goal < 0.5: reward += 2.0
+        if drone_to_goal < 0.3: reward += 5.0
+
+        # Delivery bonus for BOX near goal (the actual task)
+        if box_to_goal < 0.5: reward += 10.0
+        if box_to_goal < 0.2: reward += 25.0
 
         return reward, drone_to_goal
 
@@ -173,16 +208,15 @@ class DroneDeliveryEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.step_count = 0
+        self._last_action = np.zeros(4, dtype=np.float32)
 
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.model.key("hover").id)
 
-        # Start drone in the air at 1.5m with box hanging below it.
-        # Tendon range [0, 0.6]: package1 at drone pos (0,0,1.5),
-        # package2 at box pos (0,0,0.8)+(0,0,0.1)=(0,0,0.9) → distance 0.6 (taut).
-        self.data.qpos[:3] = [0.0, 0.0, 1.5]   # drone position
-        self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]  # drone upright
-        self.data.qpos[7:10] = [0.0, 0.0, 0.8]  # box position (0.7m below drone)
-        self.data.qpos[10:14] = [1.0, 0.0, 0.0, 0.0]  # box upright
+        # Drone at z=1.5, box hanging at z=0.8 → tendon fully taut (0.6m).
+        self.data.qpos[:3] = [0.0, 0.0, 1.5]
+        self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+        self.data.qpos[7:10] = [0.0, 0.0, 0.8]
+        self.data.qpos[10:14] = [1.0, 0.0, 0.0, 0.0]
         self.data.qvel[:] = 0.0
 
         mujoco.mj_forward(self.model, self.data)
@@ -195,25 +229,38 @@ class DroneDeliveryEnv(gym.Env):
 
     def step(self, action):
         self.step_count += 1
+        action = np.asarray(action, dtype=np.float32)
 
-        # Residual thrust around hover: action in [-1, 1] → ctrl in [hover ± ACTION_SCALE]
-        ctrl = HOVER_THRUST + np.asarray(action, dtype=np.float64) * ACTION_SCALE
-        self.data.ctrl = np.clip(ctrl, 0.0, 13.0)
+        # Cascaded PD control: high-level action → motor commands
+        quat = self.data.qpos[3:7]
+        gyro = self._get_sensor("body_gyro")
+        self.data.ctrl = cascaded_control(quat, gyro, action, HOVER_THRUST)
 
         if self.with_wind:
             for body_id in range(1, self.model.nbody):
                 pos = self.data.xpos[body_id]
-                fx, fy = wind.wind_field(pos, self.data.time)
+                fx, fy = self._wind_field_fn(
+                    pos, self.data.time, self.wind_speed,
+                    self.wind_turbulence, self._wind_angle,
+                )
                 self.data.xfrc_applied[body_id, 0] = 20 * fx
                 self.data.xfrc_applied[body_id, 1] = 20 * fy
 
         mujoco.mj_step(self.model, self.data)
+        self._last_action = action
 
         reward, self._prev_drone_to_goal = self._compute_reward(
             self._prev_drone_to_goal
         )
         terminated, reason = self._check_termination()
         truncated = self.step_count >= self.max_episode_steps
+
+        # Strong penalty for crash or going out of bounds, bonus for delivery
+        if terminated:
+            if reason == "delivered":
+                reward += 100.0
+            else:
+                reward -= 100.0
 
         info = {"step_count": self.step_count, "termination": reason}
         return self._get_obs(), float(reward), bool(terminated), bool(truncated), info

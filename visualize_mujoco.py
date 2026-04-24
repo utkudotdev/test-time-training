@@ -10,13 +10,17 @@ import numpy as np
 from stable_baselines3 import PPO
 
 import wind_sim as wind
-from env import build_scene_spec, HOVER_THRUST, ACTION_SCALE, GOAL_POSITION
+from env import build_scene_spec, HOVER_THRUST, GOAL_POSITION, DroneDeliveryEnv
+from controller import cascaded_control
 
 
 MODEL_PATH = "models/best_model"  # falls back to ppo_delivery if not found
 WITH_OBSTACLES = False
-WITH_WIND = True
-SHOW_WIND_LINES = False  # toggle with `W` key
+WITH_WIND = False                  # set True to test with weather (use WIND_TYPE below)
+WIND_TYPE = "calm"                 # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
+WIND_SPEED = 1.0
+WIND_TURBULENCE = 0.3
+SHOW_WIND_LINES = False            # toggle with `W` key
 
 
 def get_sensor(model, data, name):
@@ -26,18 +30,25 @@ def get_sensor(model, data, name):
     return data.sensordata[adr : adr + dim].copy()
 
 
-def build_observation(model, data, goal_geom_id):
-    drone_qpos = data.qpos[:7].copy()
-    drone_qvel = data.qvel[:6].copy()
-    box_qpos = data.qpos[7:14].copy()
-    box_qvel = data.qvel[6:12].copy()
-    gyro = get_sensor(model, data, "body_gyro")
-    accel = get_sensor(model, data, "body_linacc")
-    quat = get_sensor(model, data, "body_quat")
+def build_observation(model, data, goal_geom_id, last_action):
+    drone_pos = data.qpos[:3].copy()
+    quat = data.qpos[3:7].copy()
+    box_pos = data.qpos[7:10].copy()
     goal_pos = data.geom_xpos[goal_geom_id].copy()
-    return np.concatenate(
-        [drone_qpos, drone_qvel, box_qpos, box_qvel, gyro, accel, quat, goal_pos]
-    ).astype(np.float32)
+
+    rot = DroneDeliveryEnv._rotate_by_conj_quat
+    lin_vel_body = rot(data.qvel[:3].copy(), quat)
+    box_rel_pos_body = rot(box_pos - drone_pos, quat)
+    box_rel_vel_body = rot(data.qvel[6:9].copy() - data.qvel[:3].copy(), quat)
+    goal_vec_body = rot(goal_pos - drone_pos, quat)
+
+    return np.concatenate([
+        [drone_pos[2]], quat, lin_vel_body,
+        get_sensor(model, data, "body_gyro"),
+        get_sensor(model, data, "body_linacc"),
+        box_rel_pos_body, box_rel_vel_body, goal_vec_body,
+        last_action,
+    ]).astype(np.float32)
 
 
 def load_policy():
@@ -89,6 +100,9 @@ def main():
 
     print("Controls: SPACE=pause  R=reset  W=toggle wind lines")
 
+    last_action = np.zeros(4, dtype=np.float32)
+    wind_field_fn = getattr(wind, f"wind_{WIND_TYPE}")
+
     with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as viewer:
         viewer.sync()
 
@@ -96,21 +110,24 @@ def main():
             step_start = time.time()
 
             if not paused:
-                # Apply wind forces
                 if WITH_WIND:
                     for body_id in range(1, model.nbody):
                         pos = data.xpos[body_id]
-                        fx, fy = wind.wind_field(pos, data.time)
+                        fx, fy = wind_field_fn(
+                            pos, data.time, WIND_SPEED, WIND_TURBULENCE, 0.0
+                        )
                         data.xfrc_applied[body_id, 0] = 20 * fx
                         data.xfrc_applied[body_id, 1] = 20 * fy
 
-                # Policy action → residual thrust
-                obs = build_observation(model, data, goal_geom_id)
+                # Cascaded control: policy action → motors via PD
+                obs = build_observation(model, data, goal_geom_id, last_action)
                 action, _ = policy.predict(obs, deterministic=True)
-                ctrl = HOVER_THRUST + action.astype(np.float64) * ACTION_SCALE
-                data.ctrl = np.clip(ctrl, 0.0, 13.0)
+                quat = data.qpos[3:7]
+                gyro = get_sensor(model, data, "body_gyro")
+                data.ctrl = cascaded_control(quat, gyro, action, HOVER_THRUST)
 
                 mujoco.mj_step(model, data)
+                last_action = action.astype(np.float32)
                 step_count += 1
 
                 if step_count % 100 == 0:
@@ -123,7 +140,10 @@ def main():
                     )
 
             if show_wind:
-                wind.update_wind_lines(viewer, model, data)
+                wind.update_wind_lines(
+                    viewer, model, wind_field_fn, data,
+                    WIND_SPEED, WIND_TURBULENCE, 0.0,
+                )
             viewer.sync()
 
             dt = model.opt.timestep - (time.time() - step_start)

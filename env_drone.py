@@ -23,9 +23,20 @@ class DroneEnv(gym.Env):
 
     metadata = {"render_modes": [], "render_fps": 100}
 
-    def __init__(self, max_episode_steps=1000, with_wind=True):
+    def __init__(
+        self,
+        max_episode_steps=1000,
+        with_wind=True,
+        wind_type="calm",
+        wind_speed=1.0,
+        wind_turbulence=0.3,
+    ):
         self.max_episode_steps = max_episode_steps
         self.with_wind = with_wind
+        self.wind_speed = wind_speed
+        self.wind_turbulence = wind_turbulence
+        self._wind_field_fn = getattr(wind, f"wind_{wind_type}")
+        self._wind_angle = 0.0
         self.step_count = 0
 
         spec = mujoco.MjSpec.from_file("x2_only.xml")
@@ -165,7 +176,10 @@ class DroneEnv(gym.Env):
         if self.with_wind:
             for body_id in range(1, self.model.nbody):
                 pos = self.data.xpos[body_id]
-                fx, fy = wind.wind_field(pos, self.data.time)
+                fx, fy = self._wind_field_fn(
+                    pos, self.data.time, self.wind_speed,
+                    self.wind_turbulence, self._wind_angle,
+                )
                 self.data.xfrc_applied[body_id, 0] = 20 * fx
                 self.data.xfrc_applied[body_id, 1] = 20 * fy
 
