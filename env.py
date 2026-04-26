@@ -210,6 +210,12 @@ class DroneDeliveryEnv(gym.Env):
         self.step_count = 0
         self._last_action = np.zeros(4, dtype=np.float32)
 
+        if getattr(self, "_randomize_wind", False):
+            wtype = self.np_random.choice(self._rand_wind_types)
+            spd = float(self.np_random.uniform(*self._rand_speed_range))
+            turb = float(self.np_random.uniform(*self._rand_turbulence_range))
+            self.set_wind(wtype, spd, turb)
+
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.model.key("hover").id)
 
         # Drone at z=1.5, box hanging at z=0.8 → tendon fully taut (0.6m).
@@ -243,8 +249,8 @@ class DroneDeliveryEnv(gym.Env):
                     pos, self.data.time, self.wind_speed,
                     self.wind_turbulence, self._wind_angle,
                 )
-                self.data.xfrc_applied[body_id, 0] = 20 * fx
-                self.data.xfrc_applied[body_id, 1] = 20 * fy
+                self.data.xfrc_applied[body_id, 0] = 2 * fx
+                self.data.xfrc_applied[body_id, 1] = 2 * fy
 
         mujoco.mj_step(self.model, self.data)
         self._last_action = action
@@ -264,6 +270,25 @@ class DroneDeliveryEnv(gym.Env):
 
         info = {"step_count": self.step_count, "termination": reason}
         return self._get_obs(), float(reward), bool(terminated), bool(truncated), info
+
+    def set_wind(self, wind_type="none", speed=1.0, turbulence=0.3):
+        """Hot-swap wind config (called by curriculum callback via env_method)."""
+        self.with_wind = wind_type != "none"
+        self._wind_field_fn = getattr(wind, f"wind_{wind_type}")
+        self.wind_speed = speed
+        self.wind_turbulence = turbulence
+
+    def enable_wind_randomization(
+        self,
+        types=("calm", "cold_front", "squall", "thermal", "jet_stream"),
+        speed_range=(0.5, 1.5),
+        turbulence_range=(0.1, 0.5),
+    ):
+        """Per-episode random wind type + strength (domain randomization)."""
+        self._randomize_wind = True
+        self._rand_wind_types = list(types)
+        self._rand_speed_range = speed_range
+        self._rand_turbulence_range = turbulence_range
 
     def render(self):
         pass

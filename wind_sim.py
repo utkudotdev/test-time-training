@@ -75,9 +75,11 @@ def wind_calm(pos, t, speed=1.0, turbulence=0.3, field_angle=0.0):
     dy  = -dx * sin_a + dy * cos_a
     r = np.sqrt(dx * dx + dy * dy) + 0.001
     s = 1.0 / (r * 6 + 0.4)
-    u = (-dy * s + dx * 0.18) * 1.8 * speed
-    v = (dx * s + dy * 0.18) * 1.8 * speed
-    u += np.sin(pos[0] * 4 + t * 3.0)* turbulence * 0.5
+    # Rotational component only — removed the `dx/dy * 0.18` radial drift term
+    # that caused force to grow linearly with distance (6.5N at the goal vs 0N at start).
+    u = (-dy * s) * 1.8 * speed
+    v = ( dx * s) * 1.8 * speed
+    u += np.sin(pos[0] * 4 + t * 3.0) * turbulence * 0.5
     v += np.cos(pos[1] * 4 + t * 3.0) * turbulence * 0.5
     return u, v
 

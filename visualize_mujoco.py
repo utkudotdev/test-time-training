@@ -14,10 +14,12 @@ from env import build_scene_spec, HOVER_THRUST, GOAL_POSITION, DroneDeliveryEnv
 from controller import cascaded_control
 
 
-MODEL_PATH = "models/best_model"  # falls back to ppo_delivery if not found
-WITH_OBSTACLES = False
-WITH_WIND = False                  # set True to test with weather (use WIND_TYPE below)
-WIND_TYPE = "calm"                 # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
+# MODEL_PATH = "models_full/ppo_full_1500000_steps"  # falls back to ppo_delivery if not found
+MODEL_PATH = "models_full/best_model"  # trained on full env with obstacles/wind; should perform better in this visualization than ppo_delivery.zip, which was trained on drone-only env. Note that the two policies may have different action scales, so ppo_delivery.zip may perform worse but still be qualitatively successful (i.e. can learn to hover and navigate before tackling the delivery task).
+# MODEL_PATH = "models/best_model" 
+WITH_OBSTACLES = True
+WITH_WIND = True                 # set True to test with weather (use WIND_TYPE below)
+WIND_TYPE = "jet_stream"                 # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
 WIND_SPEED = 1.0
 WIND_TURBULENCE = 0.3
 SHOW_WIND_LINES = False            # toggle with `W` key
@@ -116,8 +118,8 @@ def main():
                         fx, fy = wind_field_fn(
                             pos, data.time, WIND_SPEED, WIND_TURBULENCE, 0.0
                         )
-                        data.xfrc_applied[body_id, 0] = 20 * fx
-                        data.xfrc_applied[body_id, 1] = 20 * fy
+                        data.xfrc_applied[body_id, 0] = 2 * fx
+                        data.xfrc_applied[body_id, 1] = 2 * fy
 
                 # Cascaded control: policy action → motors via PD
                 obs = build_observation(model, data, goal_geom_id, last_action)

@@ -9,7 +9,7 @@ MODEL_PATH = "models/best_model" if os.path.exists("models/best_model.zip") else
 print(f"Loading {MODEL_PATH}.zip")
 model = PPO.load(MODEL_PATH)
 
-env = DroneDeliveryEnv(max_episode_steps=1000, with_obstacles=False)
+env = DroneDeliveryEnv(max_episode_steps=1000, with_obstacles=False, with_wind=False)
 
 num_episodes = 5
 rewards, lengths, outcomes = [], [], []
