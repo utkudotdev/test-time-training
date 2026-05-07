@@ -1,2 +1,7 @@
 typings/
 MUJOCO_LOG.TXT
+logs/
+logs_ttt/
+models/
+models_ttt/
+__pycache__/

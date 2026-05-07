@@ -25,15 +25,15 @@ LOG_DIR = "logs"
 MODEL_DIR = "models"
 
 
-def make_env(rank, seed=0, with_obstacles=False):
+def make_env(with_obstacles=False):
     def _init():
         env = DroneDeliveryEnv(
             max_episode_steps=1000,
             with_obstacles=with_obstacles,
             with_wind=False,
-            seed=seed + rank,
         )
         return env
+
     return _init
 
 
@@ -42,11 +42,11 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     # Training envs (no obstacles initially for easier learning)
-    train_env = SubprocVecEnv([make_env(i, with_obstacles=False) for i in range(N_ENVS)])
+    train_env = SubprocVecEnv([make_env(with_obstacles=False) for _ in range(N_ENVS)])
     train_env = VecMonitor(train_env, filename=os.path.join(LOG_DIR, "train_monitor"))
 
     # Eval env (single, for periodic evaluation)
-    eval_env = SubprocVecEnv([make_env(100, with_obstacles=False)])
+    eval_env = SubprocVecEnv([make_env(with_obstacles=False)])
     eval_env = VecMonitor(eval_env, filename=os.path.join(LOG_DIR, "eval_monitor"))
 
     model = PPO(

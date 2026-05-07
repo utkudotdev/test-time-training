@@ -21,7 +21,11 @@ import torch as th
 import torch.nn.functional as F
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import (
+    BaseCallback,
+    CheckpointCallback,
+    EvalCallback,
+)
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from env import DroneDeliveryEnv
@@ -29,23 +33,23 @@ from policy_ttt import WindAwarePolicy, VEL_IDX, ACCEL_IDX
 from train_full import CurriculumCallback, CURRICULUM, ALL_WIND_TYPES
 
 
-N_ENVS        = 8
-TOTAL_STEPS   = 1_500_000
-AUX_LR        = 3e-4
-AUX_COEF      = 0.1       # weight on aux loss (relative to keeping ppo scale)
-LOG_DIR       = "logs_ttt"
-MODEL_DIR     = "models_ttt"
-PRETRAIN_PATH = "models/best_model"   # no-wind pretrained checkpoint
+N_ENVS = 8
+TOTAL_STEPS = 1_500_000
+AUX_LR = 3e-4
+AUX_COEF = 0.1  # weight on aux loss (relative to keeping ppo scale)
+LOG_DIR = "logs_ttt"
+MODEL_DIR = "models_ttt"
+PRETRAIN_PATH = "models/best_model"  # no-wind pretrained checkpoint
 
 
-def make_env(rank, seed=0, with_obstacles=False):
+def make_env(with_obstacles=False):
     def _init():
         return DroneDeliveryEnv(
             max_episode_steps=1000,
             with_obstacles=with_obstacles,
             with_wind=False,
-            seed=seed + rank,
         )
+
     return _init
 
 
@@ -66,37 +70,39 @@ class AuxLossCallback(BaseCallback):
         policy = self.model.policy
         # Optimise both the aux_head and the shared encoder so the representation
         # becomes wind-aware. Use a lower LR than PPO to avoid dominance.
-        params = (
-            list(policy.aux_head.parameters()) +
-            list(policy.mlp_extractor.parameters())
+        params = list(policy.aux_head.parameters()) + list(
+            policy.mlp_extractor.parameters()
         )
         self._aux_opt = th.optim.Adam(params, lr=self.lr)
 
     def _on_rollout_end(self) -> None:
         buf = self.model.rollout_buffer
 
-        obs    = th.tensor(buf.observations, dtype=th.float32)  # (T, N, obs_dim)
-        acts   = th.tensor(buf.actions,      dtype=th.float32)  # (T, N, act_dim)
-        starts = th.tensor(buf.episode_starts, dtype=th.bool)   # (T, N)
+        obs = th.tensor(buf.observations, dtype=th.float32)  # (T, N, obs_dim)
+        acts = th.tensor(buf.actions, dtype=th.float32)  # (T, N, act_dim)
+        starts = th.tensor(buf.episode_starts, dtype=th.bool)  # (T, N)
 
         # Consecutive pairs (t, t+1) — flatten over envs
-        obs_t  = obs[:-1].reshape(-1, obs.shape[-1])
+        obs_t = obs[:-1].reshape(-1, obs.shape[-1])
         obs_t1 = obs[1:].reshape(-1, obs.shape[-1])
         acts_t = acts[:-1].reshape(-1, acts.shape[-1])
-        valid  = ~starts[1:].reshape(-1)   # mask episode-boundary steps
+        valid = ~starts[1:].reshape(-1)  # mask episode-boundary steps
 
         if valid.sum() < 32:
             return
 
-        obs_t  = obs_t[valid]
+        obs_t = obs_t[valid]
         obs_t1 = obs_t1[valid]
         acts_t = acts_t[valid]
 
         # Target: observed dynamics residual (wind effect shows up here)
-        target = th.cat([
-            obs_t1[:, VEL_IDX]   - obs_t[:, VEL_IDX],
-            obs_t1[:, ACCEL_IDX] - obs_t[:, ACCEL_IDX],
-        ], dim=-1).detach()
+        target = th.cat(
+            [
+                obs_t1[:, VEL_IDX] - obs_t[:, VEL_IDX],
+                obs_t1[:, ACCEL_IDX] - obs_t[:, ACCEL_IDX],
+            ],
+            dim=-1,
+        ).detach()
 
         pred = self.model.policy.predict_aux(obs_t, acts_t)
         loss = F.mse_loss(pred, target)
@@ -127,19 +133,17 @@ def main():
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    train_env = SubprocVecEnv(
-        [make_env(i, with_obstacles=False) for i in range(N_ENVS)]
-    )
+    train_env = SubprocVecEnv([make_env(with_obstacles=False) for _ in range(N_ENVS)])
     train_env = VecMonitor(train_env, filename=os.path.join(LOG_DIR, "train_monitor"))
 
-    eval_env = SubprocVecEnv([make_env(100, with_obstacles=False)])
+    eval_env = SubprocVecEnv([make_env(with_obstacles=False)])
     eval_env = VecMonitor(eval_env, filename=os.path.join(LOG_DIR, "eval_monitor"))
     eval_env.env_method("set_wind", "calm", 1.0, 0.3)
 
     model = PPO(
         WindAwarePolicy,
         train_env,
-        learning_rate=1e-4,   # fine-tuning LR
+        learning_rate=1e-4,  # fine-tuning LR
         n_steps=2048,
         batch_size=256,
         n_epochs=10,
@@ -152,6 +156,7 @@ def main():
         policy_kwargs=dict(net_arch=[256, 256], aux_hidden=64),
         tensorboard_log=LOG_DIR,
         verbose=1,
+        device="cpu",
     )
 
     if os.path.exists(PRETRAIN_PATH + ".zip"):
@@ -187,7 +192,9 @@ def main():
     for ts, cfg in CURRICULUM:
         print(f"  {ts:>8,}  →  {cfg['phase']}")
 
-    model.learn(total_timesteps=TOTAL_STEPS, callback=callbacks, reset_num_timesteps=True)
+    model.learn(
+        total_timesteps=TOTAL_STEPS, callback=callbacks, reset_num_timesteps=True
+    )
 
     model.save(os.path.join(MODEL_DIR, "ppo_ttt"))
     print(f"Saved to {MODEL_DIR}/ppo_ttt.zip")

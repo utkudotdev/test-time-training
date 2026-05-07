@@ -26,7 +26,11 @@ Visualize:
 import os
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import (
+    BaseCallback,
+    CheckpointCallback,
+    EvalCallback,
+)
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from env import DroneDeliveryEnv
@@ -42,25 +46,29 @@ PRETRAIN_PATH = "models/best_model"
 
 ALL_WIND_TYPES = ["calm", "cold_front", "squall", "thermal", "jet_stream"]
 TRAIN_WIND_TYPES = ["calm", "cold_front", "squall"]
-TEST_WIND_TYPES = ["thermal", "jet_stream"]  # only in final randomization phase; not seen during training but still within drone's control authority, so should be manageable with good generalization. Note that the two policies may have different action scales, so even if the pretrained model performs worse with these unseen wind types, it can still be qualitatively successful (i.e. can learn to hover and navigate before tackling the delivery task).
+TEST_WIND_TYPES = [
+    "thermal",
+    "jet_stream",
+]  # only in final randomization phase; not seen during training but still within drone's control authority, so should be manageable with good generalization. Note that the two policies may have different action scales, so even if the pretrained model performs worse with these unseen wind types, it can still be qualitatively successful (i.e. can learn to hover and navigate before tackling the delivery task).
 # (start_timestep, config)
 # Wind forces with 2x multiplier are now within the drone's 8.9 N lateral budget.
 CURRICULUM = [
-    (0,       dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
+    (0, dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
     (200_000, dict(phase="calm_medium", wind_type="calm", speed=0.6, turbulence=0.15)),
-    (500_000, dict(phase="calm_full",   wind_type="calm", speed=1.0, turbulence=0.3)),
+    (500_000, dict(phase="calm_full", wind_type="calm", speed=1.0, turbulence=0.3)),
     (800_000, dict(phase="randomize")),
 ]
 
 
-def make_env(rank, seed=0, with_obstacles=False):
+def make_env(seed=0, with_obstacles=False):
     def _init():
         return DroneDeliveryEnv(
             max_episode_steps=1000,
             with_obstacles=with_obstacles,
-            with_wind=False,   # curriculum callback enables wind
-            seed=seed + rank,
+            with_wind=False,  # curriculum callback enables wind
+            seed=seed,
         )
+
     return _init
 
 
@@ -78,7 +86,7 @@ class CurriculumCallback(BaseCallback):
             self.train_env.env_method(
                 "enable_wind_randomization",
                 TRAIN_WIND_TYPES,
-                (0.3, 1.0),   # speed range within drone's lateral control authority
+                (0.3, 1.0),  # speed range within drone's lateral control authority
                 (0.05, 0.3),
             )
             if self.verbose:
@@ -127,7 +135,9 @@ def main():
             learning_rate=1e-4,
         )
     else:
-        print(f"No pretrained model found at {PRETRAIN_PATH}.zip — training from scratch.")
+        print(
+            f"No pretrained model found at {PRETRAIN_PATH}.zip — training from scratch."
+        )
         print("Tip: run train.py first for best results.")
         model = PPO(
             "MlpPolicy",
@@ -173,7 +183,7 @@ def main():
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,
         callback=callbacks,
-        reset_num_timesteps=True,   # curriculum counts from 0 in this run
+        reset_num_timesteps=True,  # curriculum counts from 0 in this run
     )
 
     final_path = os.path.join(MODEL_DIR, "ppo_full")
