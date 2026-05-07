@@ -55,7 +55,7 @@ GRAD_LR = 5e-4
 GRAD_CLIP = 0.5  # max norm
 PROX_LAMBDA = 0.5  # L2 penalty toward pretrained weights (prevents forgetting)
 EARLY_STOP_DELTA = 5e-4  # stop when aux loss improvement per step drops below this
-MIN_AUX_LOSS = 0.35  # skip adaptation entirely if initial aux loss is below this
+MIN_AUX_LOSS = 0.2  # skip adaptation entirely if initial aux loss is below this
 # (wind signal too weak → gradient steps fit noise, hurts policy)
 
 
@@ -264,4 +264,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
