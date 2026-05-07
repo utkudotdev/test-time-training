@@ -15,14 +15,16 @@ from controller import cascaded_control
 
 
 # MODEL_PATH = "models_full/ppo_full_1500000_steps"  # falls back to ppo_delivery if not found
-MODEL_PATH = "models_full/best_model"  # trained on full env with obstacles/wind; should perform better in this visualization than ppo_delivery.zip, which was trained on drone-only env. Note that the two policies may have different action scales, so ppo_delivery.zip may perform worse but still be qualitatively successful (i.e. can learn to hover and navigate before tackling the delivery task).
-# MODEL_PATH = "models/best_model" 
+# MODEL_PATH = "models_full/best_model"  # trained on full env with obstacles/wind; should perform better in this visualization than ppo_delivery.zip, which was trained on drone-only env. Note that the two policies may have different action scales, so ppo_delivery.zip may perform worse but still be qualitatively successful (i.e. can learn to hover and navigate before tackling the delivery task).
+MODEL_PATH = "models/best_model"
 WITH_OBSTACLES = True
-WITH_WIND = True                 # set True to test with weather (use WIND_TYPE below)
-WIND_TYPE = "jet_stream"                 # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
+WITH_WIND = True  # set True to test with weather (use WIND_TYPE below)
+WIND_TYPE = (
+    "jet_stream"  # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
+)
 WIND_SPEED = 1.0
 WIND_TURBULENCE = 0.3
-SHOW_WIND_LINES = False            # toggle with `W` key
+SHOW_WIND_LINES = False  # toggle with `W` key
 
 
 def get_sensor(model, data, name):
@@ -44,17 +46,24 @@ def build_observation(model, data, goal_geom_id, last_action):
     box_rel_vel_body = rot(data.qvel[6:9].copy() - data.qvel[:3].copy(), quat)
     goal_vec_body = rot(goal_pos - drone_pos, quat)
 
-    return np.concatenate([
-        [drone_pos[2]], quat, lin_vel_body,
-        get_sensor(model, data, "body_gyro"),
-        get_sensor(model, data, "body_linacc"),
-        box_rel_pos_body, box_rel_vel_body, goal_vec_body,
-        last_action,
-    ]).astype(np.float32)
+    return np.concatenate(
+        [
+            [drone_pos[2]],
+            quat,
+            lin_vel_body,
+            get_sensor(model, data, "body_gyro"),
+            get_sensor(model, data, "body_linacc"),
+            box_rel_pos_body,
+            box_rel_vel_body,
+            goal_vec_body,
+            last_action,
+        ]
+    ).astype(np.float32)
 
 
 def load_policy():
     import os
+
     if os.path.exists(MODEL_PATH + ".zip"):
         print(f"Loading policy from {MODEL_PATH}.zip")
         return PPO.load(MODEL_PATH)
@@ -63,7 +72,7 @@ def load_policy():
 
 
 def main():
-    spec = build_scene_spec(seed=0, with_obstacles=WITH_OBSTACLES)
+    spec, _, _ = build_scene_spec(with_obstacles=WITH_OBSTACLES)
     model = spec.compile()
     data = mujoco.MjData(model)
 
@@ -143,8 +152,13 @@ def main():
 
             if show_wind:
                 wind.update_wind_lines(
-                    viewer, model, wind_field_fn, data,
-                    WIND_SPEED, WIND_TURBULENCE, 0.0,
+                    viewer,
+                    model,
+                    wind_field_fn,
+                    data,
+                    WIND_SPEED,
+                    WIND_TURBULENCE,
+                    0.0,
                 )
             viewer.sync()
 
