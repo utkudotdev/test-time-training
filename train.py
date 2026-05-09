@@ -42,11 +42,11 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     # Training envs (no obstacles initially for easier learning)
-    train_env = SubprocVecEnv([make_env(with_obstacles=False) for _ in range(N_ENVS)])
+    train_env = SubprocVecEnv([make_env(with_obstacles=True) for _ in range(N_ENVS)])
     train_env = VecMonitor(train_env, filename=os.path.join(LOG_DIR, "train_monitor"))
 
     # Eval env (single, for periodic evaluation)
-    eval_env = SubprocVecEnv([make_env(with_obstacles=False)])
+    eval_env = SubprocVecEnv([make_env(with_obstacles=True)])
     eval_env = VecMonitor(eval_env, filename=os.path.join(LOG_DIR, "eval_monitor"))
 
     model = PPO(

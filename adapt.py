@@ -23,6 +23,7 @@ Run:
 """
 
 import copy
+import argparse
 import numpy as np
 import torch as th
 import torch.nn.functional as F
@@ -31,32 +32,30 @@ from stable_baselines3 import PPO
 from env import DroneDeliveryEnv
 from policy_ttt import WindAwarePolicy, VEL_IDX, ACCEL_IDX
 
-MODEL_PATH = "models_ttt/best_model"
+DEFAULT_MODEL_PATH = "models_ttt/best_model"
 
 TEST_CONDITIONS = [
-    dict(wind_type="calm", wind_speed=1.0, wind_turbulence=0.3, label="calm (in-dist)"),
-    dict(
-        wind_type="thermal", wind_speed=1.0, wind_turbulence=0.3, label="thermal (OOD)"
-    ),
-    dict(
-        wind_type="jet_stream",
-        wind_speed=1.0,
-        wind_turbulence=0.3,
-        label="jet_stream (OOD)",
-    ),
-    dict(wind_type="squall", wind_speed=1.0, wind_turbulence=0.3, label="squall (OOD)"),
+    dict(wind_type="calm",       wind_speed=1.0, wind_turbulence=0.3, label="calm (in-dist)"),
+    dict(wind_type="thermal",    wind_speed=1.0, wind_turbulence=0.3, label="thermal (OOD)"),
+    dict(wind_type="jet_stream", wind_speed=1.0, wind_turbulence=0.3, label="jet_stream (OOD)"),
+    dict(wind_type="squall",     wind_speed=1.0, wind_turbulence=0.3, label="squall (OOD)"),
+    dict(wind_type="cold_front", wind_speed=1.0, wind_turbulence=0.3, label="cold_front (OOD)"),
+    dict(wind_type="cyclone",    wind_speed=1.0, wind_turbulence=0.3, label="cyclone (OOD)"),
 ]
 
 N_ADAPT_EPISODES = 10
 N_EVAL_EPISODES = 5
-GRAD_STEPS_FULL = 200  # thorough adaptation
-GRAD_STEPS_FAST = 30  # fast adaptation (fewer compute budget)
+GRAD_STEPS_FULL = 50   # max adaptation steps for adaptive mode
+# 200 was too many: cold_front peaks at ~30 steps (EpLen=229, short/noisy rollouts)
+# then degrades; 50 caps the overshoot. Squall already exits via early stopping (~32).
+GRAD_STEPS_FAST = 30  # fast adaptation (fixed budget)
 GRAD_LR = 5e-4
 GRAD_CLIP = 0.5  # max norm
 PROX_LAMBDA = 0.5  # L2 penalty toward pretrained weights (prevents forgetting)
-EARLY_STOP_DELTA = 5e-4  # stop when aux loss improvement per step drops below this
-MIN_AUX_LOSS = 0.2  # skip adaptation entirely if initial aux loss is below this
-# (wind signal too weak → gradient steps fit noise, hurts policy)
+EARLY_STOP_DELTA = 1e-3  # stop when aux loss improvement per step drops below this
+MIN_AUX_LOSS = 0.55  # skip adaptation if initial aux loss is below this
+# Data-driven cutoff: jet_stream=0.503 (zero-shot already excellent, hurts to adapt),
+# squall=0.666 (needs adaptation). 0.55 sits cleanly between the two.
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +161,20 @@ def gradient_adapt(
 
 
 def fast_adapt(model, rollouts):
-    """Same as gradient_adapt but only 30 steps — for speed-vs-quality comparison."""
-    return gradient_adapt(model, rollouts, n_steps=GRAD_STEPS_FAST, lr=GRAD_LR)
+    """Same as gradient_adapt but only 30 steps.
+
+    Skips if initial aux loss < MIN_AUX_LOSS (same guard as adaptive_adapt)
+    so in-dist and easy winds are not over-adapted by the blind 30-step run.
+    Returns (model, steps_taken, init_loss).
+    """
+    obs_t, acts_t, target = rollouts_to_tensors(rollouts)
+    with th.no_grad():
+        init_pred = model.policy.predict_aux(obs_t, acts_t)
+        init_loss = F.mse_loss(init_pred, target).item()
+    if init_loss < MIN_AUX_LOSS:
+        return model, 0, init_loss
+    gradient_adapt(model, rollouts, n_steps=GRAD_STEPS_FAST, lr=GRAD_LR)
+    return model, GRAD_STEPS_FAST, init_loss
 
 
 def adaptive_adapt(
@@ -193,7 +204,7 @@ def adaptive_adapt(
         init_pred = policy.predict_aux(obs_t, acts_t)
         init_loss = F.mse_loss(init_pred, target).item()
     if init_loss < MIN_AUX_LOSS:
-        return model, 0  # wind already predictable; gradient steps would fit noise
+        return model, 0, init_loss  # wind already predictable; gradient steps would fit noise
 
     prev_loss = float("inf")
     steps_taken = 0
@@ -214,7 +225,7 @@ def adaptive_adapt(
             break
         prev_loss = aux_loss.item()
     policy.set_training_mode(False)
-    return model, steps_taken
+    return model, steps_taken, init_loss
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +234,14 @@ def adaptive_adapt(
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL_PATH,
+        help="Path to model (without .zip). Defaults to models_ttt/best_model.",
+    )
+    args = parser.parse_args()
+    MODEL_PATH = args.model
+
     print(f"Loading {MODEL_PATH}.zip")
     base_model = PPO.load(MODEL_PATH, device="cpu")
 
@@ -234,7 +253,10 @@ def main():
         f"         grad_steps_full={GRAD_STEPS_FULL}  fast={GRAD_STEPS_FAST}  lr={GRAD_LR}  prox_lambda={PROX_LAMBDA}"
     )
 
-    header = f"\n{'Condition':<22}  {'Zero-shot':>10}  {'Fast(30)':>10}  {'Adaptive':>10}  {'Steps':>6}"
+    header = (
+        f"\n{'Condition':<22}  {'AuxLoss':>7}  {'EpLen':>5}  "
+        f"{'Zero-shot':>10}  {'Fast':>10}  {'Adaptive':>10}  {'Steps':>6}"
+    )
     print(header)
     print("-" * len(header))
 
@@ -246,16 +268,21 @@ def main():
         zs_r = evaluate(base, env, N_EVAL_EPISODES)
         rollouts = collect_episodes(base, env, N_ADAPT_EPISODES)
 
+        mean_ep_len = float(np.mean([len(r[0]) for r in rollouts]))
+
         fast_model = copy.deepcopy(base_model)
-        fast_adapt(fast_model, rollouts)
+        fast_model, _, init_loss = fast_adapt(fast_model, rollouts)
         fast_r = evaluate(fast_model, env, N_EVAL_EPISODES)
 
         ada_model = copy.deepcopy(base_model)
-        ada_model, steps = adaptive_adapt(ada_model, rollouts)
+        ada_model, steps, _ = adaptive_adapt(ada_model, rollouts)
         ada_r = evaluate(ada_model, env, N_EVAL_EPISODES)
 
+        skip = init_loss < MIN_AUX_LOSS
+        steps_str = f"{steps:>6}" if not skip else f"{'skip':>6}"
         print(
-            f"{label:<22}  {zs_r:>10.1f}  {fast_r:>10.1f}  {ada_r:>10.1f}  {steps:>6}"
+            f"{label:<22}  {init_loss:>7.3f}  {mean_ep_len:>5.0f}  "
+            f"{zs_r:>10.1f}  {fast_r:>10.1f}  {ada_r:>10.1f}  {steps_str}"
         )
 
         env.close()

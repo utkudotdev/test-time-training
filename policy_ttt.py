@@ -1,25 +1,28 @@
 """WindAwarePolicy: ActorCriticPolicy with dynamics-prediction auxiliary head.
 
-Architecture:
-  obs → features_extractor → mlp_extractor → pi_latent ──→ action_net  → π(a|s)
-                                                        └──→ value_net   → V(s)
-                             (pi_latent ⊕ action) → aux_head → Δ[lin_vel(3), accel(3)]
+Architecture (use_wind_context=True, 33D obs):
+  obs(33D) → features_extractor → mlp_extractor → pi_latent ──→ action_net → π(a|s)
+                                                             └──→ value_net  → V(s)
+             (pi_latent ⊕ action) → aux_head → Δ[lin_vel(3), accel(3)]
 
-The aux_head learns to predict 6D dynamics residuals from the shared encoder.
-This is:
-  - Self-supervised at test time: no reward needed, only consecutive obs pairs
-  - Used for Neural-Fly-style linear adapter: Φ(s,a) · c where only c updates
+The rolling 6D wind context (obs[27:33]) is computed by the env each step as an
+EMA of recent Δ[lin_vel, accel]. This gives the action_net an explicit wind signal
+without requiring gradient-based TTT — adaptation happens through the rolling buffer.
+The aux_head still trains the encoder to be wind-aware (useful for TTT on top).
 
-Obs indices (27D delivery env):
-  [0]    altitude
-  [1:5]  quat
-  [5:8]  lin_vel_body   ← aux target component 1
-  [8:11] gyro
-  [11:14] body_linacc   ← aux target component 2
+Obs indices (first 27D; same positions in 33D obs):
+  [0]     altitude
+  [1:5]   quat
+  [5:8]   lin_vel_body   ← aux target component 1
+  [8:11]  gyro
+  [11:14] body_linacc    ← aux target component 2
   [14:17] box_rel_pos
   [17:20] box_rel_vel
   [20:23] goal_vec
   [23:27] last_action
+  [27:33] wind_context   ← EMA of [lin_vel(3), accel(3)] level (use_wind_context only)
+                           tracks persistent wind-distorted state; delta-EMA would
+                           converge to zero under constant wind (useless).
 """
 
 import torch as th

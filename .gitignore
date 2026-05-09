@@ -1,7 +1,35 @@
-typings/
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# MuJoCo
 MUJOCO_LOG.TXT
+
+# Training logs
 logs/
 logs_ttt/
+logs_drone/
+logs_full/
+
+# Saved models
 models/
 models_ttt/
-__pycache__/
+models_drone/
+models_full/
+
+# Type stubs
+typings/
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/

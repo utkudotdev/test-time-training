@@ -67,6 +67,11 @@ class DroneDeliveryEnv(gym.Env):
 
     metadata = {"render_modes": [], "render_fps": 100}
 
+    # EMA coefficient for the rolling wind-context estimate.
+    # α=0.9 → context adapts over ~10 steps (~100 ms at 100 Hz).
+    CONTEXT_ALPHA = 0.9
+    CONTEXT_DIM = 6  # Δlin_vel(3) + Δaccel(3)
+
     def __init__(
         self,
         max_episode_steps=1000,
@@ -75,6 +80,7 @@ class DroneDeliveryEnv(gym.Env):
         wind_type="calm",  # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
         wind_speed=1.0,
         wind_turbulence=0.3,
+        use_wind_context=False,
     ):
         self.max_episode_steps = max_episode_steps
         self.with_obstacles = with_obstacles
@@ -84,6 +90,7 @@ class DroneDeliveryEnv(gym.Env):
         self._wind_field_fn = getattr(wind, f"wind_{wind_type}")
         self._wind_angle = 0.0
         self.step_count = 0
+        self.use_wind_context = use_wind_context
 
         # Build scene and compile
         spec, obs_pos, obs_size = build_scene_spec(with_obstacles=with_obstacles)
@@ -97,15 +104,19 @@ class DroneDeliveryEnv(gym.Env):
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
 
-        # Obs (27D): z(1) + quat(4) + lin_vel_body(3) + gyro(3) + accel(3)
-        #          + box_rel_pos_body(3) + box_rel_vel_body(3) + goal_body(3) + last_action(4)
+        # Obs base (27D): z(1) + quat(4) + lin_vel_body(3) + gyro(3) + accel(3)
+        #               + box_rel_pos_body(3) + box_rel_vel_body(3) + goal_body(3) + last_action(4)
+        # With use_wind_context=True: +6D EMA of Δ[lin_vel, accel] → 33D total.
+        obs_dim = 27 + (self.CONTEXT_DIM if use_wind_context else 0)
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(27,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
         self.goal_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "goal")
         self._prev_drone_to_goal = 0.0
         self._last_action = np.zeros(4, dtype=np.float32)
+        # Rolling wind-context state (only used when use_wind_context=True)
+        self._wind_context = np.zeros(self.CONTEXT_DIM, dtype=np.float32)
 
     def _get_sensor(self, name):
         sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
@@ -139,7 +150,7 @@ class DroneDeliveryEnv(gym.Env):
         )
         goal_vec_body = self._rotate_by_conj_quat(goal_pos - drone_pos, quat)
 
-        return np.concatenate(
+        base = np.concatenate(
             [
                 [drone_pos[2]],
                 quat,
@@ -152,6 +163,9 @@ class DroneDeliveryEnv(gym.Env):
                 self._last_action,
             ]
         ).astype(np.float32)
+        if self.use_wind_context:
+            return np.concatenate([base, self._wind_context])
+        return base
 
     def _compute_reward(self, drone_to_goal_prev):
         drone_pos = self.data.qpos[:3]
@@ -196,15 +210,6 @@ class DroneDeliveryEnv(gym.Env):
         if box_to_goal < 0.2:
             reward += 25.0
 
-        if self.obstacle_pos is not None and self.obstacle_size is not None:
-            obs_distances = (
-                np.linalg.norm(self.obstacle_pos - drone_pos, axis=1)
-                - self.obstacle_size
-            )
-
-            obs_score = np.clip(obs_distances, max=0.2)
-            reward += 10 * obs_score
-
         return reward, drone_to_goal
 
     def _check_termination(self):
@@ -215,6 +220,13 @@ class DroneDeliveryEnv(gym.Env):
         # Crashed
         if drone_z < 0.05:
             return True, "crashed"
+
+        # Hit an obstacle
+        if self.obstacle_pos is not None and self.obstacle_size is not None:
+            drone_pos = self.data.qpos[:3]
+            obs_distances = np.linalg.norm(self.obstacle_pos - drone_pos, axis=1) - self.obstacle_size
+            if np.any(obs_distances < 0):
+                return True, "hit_obstacle"
 
         # Drifted too far (sanity)
         drone_xy = self.data.qpos[:2]
@@ -253,6 +265,15 @@ class DroneDeliveryEnv(gym.Env):
         goal_pos = self.data.geom_xpos[self.goal_geom]
         self._prev_drone_to_goal = float(np.linalg.norm(drone_pos - goal_pos))
 
+        if self.use_wind_context:
+            # Initialise context to current hover state so the first step has
+            # a meaningful baseline rather than a zero transient.
+            quat = self.data.qpos[3:7]
+            lin_vel = self._rotate_by_conj_quat(self.data.qvel[:3], quat)
+            self._wind_context = np.concatenate(
+                [lin_vel, self._get_sensor("body_linacc")]
+            ).astype(np.float32)
+
         return self._get_obs(), {}
 
     def step(self, action):
@@ -267,7 +288,7 @@ class DroneDeliveryEnv(gym.Env):
         if self.with_wind:
             for body_id in range(1, self.model.nbody):
                 pos = self.data.xpos[body_id]
-                fx, fy = self._wind_field_fn(
+                fx, fy, fz = self._wind_field_fn(
                     pos,
                     self.data.time,
                     self.wind_speed,
@@ -276,9 +297,23 @@ class DroneDeliveryEnv(gym.Env):
                 )
                 self.data.xfrc_applied[body_id, 0] = 2 * fx
                 self.data.xfrc_applied[body_id, 1] = 2 * fy
+                self.data.xfrc_applied[body_id, 2] = 2 * fz
 
         mujoco.mj_step(self.model, self.data)
         self._last_action = action
+
+        if self.use_wind_context:
+            quat = self.data.qpos[3:7]
+            lin_vel = self._rotate_by_conj_quat(self.data.qvel[:3], quat)
+            vel_accel = np.concatenate(
+                [lin_vel, self._get_sensor("body_linacc")]
+            ).astype(np.float32)
+            # EMA of level (not delta): converges to the persistent wind-distorted
+            # state even under constant wind. Delta-EMA → 0 in steady state.
+            self._wind_context = (
+                self.CONTEXT_ALPHA * self._wind_context
+                + (1.0 - self.CONTEXT_ALPHA) * vel_accel
+            )
 
         reward, self._prev_drone_to_goal = self._compute_reward(
             self._prev_drone_to_goal
@@ -286,10 +321,14 @@ class DroneDeliveryEnv(gym.Env):
         terminated, reason = self._check_termination()
         truncated = self.step_count >= self.max_episode_steps
 
-        # Strong penalty for crash or going out of bounds, bonus for delivery
+        # Terminal shaping: delivery bonus, crash penalty, obstacle penalty
+        # Obstacle penalty is 5× crash penalty — hitting an obstacle after accumulating
+        # up to ~1300 reward in a good episode must still be the worst outcome.
         if terminated:
             if reason == "delivered":
                 reward += 100.0
+            elif reason == "hit_obstacle":
+                reward -= 500.0
             else:
                 reward -= 100.0
 

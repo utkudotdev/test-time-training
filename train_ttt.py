@@ -16,9 +16,11 @@ Monitor:
 """
 
 import os
+import shutil
 import numpy as np
 import torch as th
 import torch.nn.functional as F
+from datetime import datetime
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
@@ -37,9 +39,23 @@ N_ENVS = 8
 TOTAL_STEPS = 1_500_000
 AUX_LR = 3e-4
 AUX_COEF = 0.1  # weight on aux loss (relative to keeping ppo scale)
-LOG_DIR = "logs_ttt"
-MODEL_DIR = "models_ttt"
+_RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
+LOG_DIR = f"logs_ttt/{_RUN_TS}"
+MODEL_DIR = f"models_ttt/{_RUN_TS}"
+_MODEL_DIR_BASE = "models_ttt"  # canonical best_model lives here for adapt.py
 PRETRAIN_PATH = "models/best_model"  # no-wind pretrained checkpoint
+
+# --- Curriculum selection ---
+# CALM_ONLY=True: train only on calm wind; rely entirely on test-time adaptation
+#   for cold_front / squall / thermal / jet_stream / cyclone.
+# CALM_ONLY=False: use the full domain-randomised curriculum from train_full.py.
+CALM_ONLY = True
+
+CALM_CURRICULUM = [
+    (0,       dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
+    (200_000, dict(phase="calm_medium", wind_type="calm", speed=0.6, turbulence=0.15)),
+    (500_000, dict(phase="calm_full",   wind_type="calm", speed=1.0, turbulence=0.30)),
+]
 
 
 def make_env(with_obstacles=False):
@@ -121,7 +137,8 @@ def _transfer_weights(src_policy, dst_policy) -> None:
     """Copy shared layers from a plain MlpPolicy into a WindAwarePolicy.
 
     WindAwarePolicy has an additional aux_head which is NOT in the source, so
-    we transfer only the parts that exist in both.
+    we transfer only the parts that exist in both. Both policies use 27D obs so
+    all layer shapes match exactly.
     """
     for name in ("features_extractor", "mlp_extractor", "action_net", "value_net"):
         getattr(dst_policy, name).load_state_dict(
@@ -168,9 +185,11 @@ def main():
     else:
         print("No pretrained model found — training from scratch (run train.py first).")
 
+    active_curriculum = CALM_CURRICULUM if CALM_ONLY else CURRICULUM
+
     callbacks = [
         AuxLossCallback(aux_coef=AUX_COEF, lr=AUX_LR, verbose=1),
-        CurriculumCallback(train_env, verbose=1),
+        CurriculumCallback(train_env, curriculum=active_curriculum, verbose=1),
         CheckpointCallback(
             save_freq=max(100_000 // N_ENVS, 1),
             save_path=MODEL_DIR,
@@ -187,9 +206,10 @@ def main():
         ),
     ]
 
-    print(f"Training {TOTAL_STEPS:,} steps, {N_ENVS} envs")
+    curriculum_label = "calm-only" if CALM_ONLY else "full domain-randomised"
+    print(f"Training {TOTAL_STEPS:,} steps, {N_ENVS} envs  [{curriculum_label} curriculum]")
     print("Curriculum:")
-    for ts, cfg in CURRICULUM:
+    for ts, cfg in active_curriculum:
         print(f"  {ts:>8,}  →  {cfg['phase']}")
 
     model.learn(
@@ -199,6 +219,14 @@ def main():
     model.save(os.path.join(MODEL_DIR, "ppo_ttt"))
     print(f"Saved to {MODEL_DIR}/ppo_ttt.zip")
     print(f"Best model → {MODEL_DIR}/best_model.zip")
+
+    # Copy best_model to canonical path so adapt.py can reference it directly.
+    os.makedirs(_MODEL_DIR_BASE, exist_ok=True)
+    src = os.path.join(MODEL_DIR, "best_model.zip")
+    dst = os.path.join(_MODEL_DIR_BASE, "best_model.zip")
+    if os.path.exists(src):
+        shutil.copy2(src, dst)
+        print(f"Canonical    → {dst}  (latest best)")
 
     train_env.close()
     eval_env.close()

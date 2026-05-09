@@ -24,7 +24,9 @@ Visualize:
 """
 
 import os
+import shutil
 import numpy as np
+from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     BaseCallback,
@@ -38,14 +40,16 @@ from env import DroneDeliveryEnv
 
 N_ENVS = 8
 TOTAL_TIMESTEPS = 1_500_000
-LOG_DIR = "logs_full"
-MODEL_DIR = "models_full"
+_RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
+LOG_DIR = f"logs_full/{_RUN_TS}"
+MODEL_DIR = f"models_full/{_RUN_TS}"
+_MODEL_DIR_BASE = "models_full"  # canonical best_model lives here for adapt.py
 
 # Pretrained no-wind checkpoint to warm-start from
 PRETRAIN_PATH = "models/best_model"
 
-ALL_WIND_TYPES = ["calm", "cold_front", "squall", "thermal", "jet_stream"]
-TRAIN_WIND_TYPES = ["calm", "cold_front", "squall"]
+ALL_WIND_TYPES = ["calm", "cold_front", "squall", "thermal", "jet_stream", "cyclone"]
+TRAIN_WIND_TYPES = ["calm", "cold_front", "squall", "cyclone"]
 TEST_WIND_TYPES = [
     "thermal",
     "jet_stream",
@@ -75,9 +79,10 @@ def make_env(seed=0, with_obstacles=False):
 class CurriculumCallback(BaseCallback):
     """Advances wind curriculum and logs phase index to tensorboard."""
 
-    def __init__(self, train_env, verbose=1):
+    def __init__(self, train_env, curriculum=None, verbose=1):
         super().__init__(verbose)
         self.train_env = train_env
+        self._curriculum = curriculum if curriculum is not None else CURRICULUM
         self._current_phase_idx = -1
 
     def _apply_phase(self, cfg):
@@ -103,7 +108,7 @@ class CurriculumCallback(BaseCallback):
         self.logger.record("curriculum/phase_idx", self._current_phase_idx)
 
     def _on_step(self) -> bool:
-        for i, (start_ts, cfg) in enumerate(CURRICULUM):
+        for i, (start_ts, cfg) in enumerate(self._curriculum):
             if self.num_timesteps >= start_ts and i > self._current_phase_idx:
                 self._current_phase_idx = i
                 self._apply_phase(cfg)
@@ -115,12 +120,12 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     train_env = SubprocVecEnv(
-        [make_env(i, with_obstacles=False) for i in range(N_ENVS)]
+        [make_env(i, with_obstacles=True) for i in range(N_ENVS)]
     )
     train_env = VecMonitor(train_env, filename=os.path.join(LOG_DIR, "train_monitor"))
 
     # Eval env: fixed calm wind so comparison is consistent across all phases
-    eval_env = SubprocVecEnv([make_env(100, with_obstacles=False)])
+    eval_env = SubprocVecEnv([make_env(100, with_obstacles=True)])
     eval_env = VecMonitor(eval_env, filename=os.path.join(LOG_DIR, "eval_monitor"))
     eval_env.env_method("set_wind", "calm", 1.0, 0.3)
 
@@ -190,6 +195,15 @@ def main():
     model.save(final_path)
     print(f"\nFinal model  → {final_path}.zip")
     print(f"Best model   → {MODEL_DIR}/best_model.zip")
+
+    # Copy best_model to canonical path so visualize_mujoco.py / adapt.py can
+    # reference models_full/best_model without knowing the run timestamp.
+    os.makedirs(_MODEL_DIR_BASE, exist_ok=True)
+    src = os.path.join(MODEL_DIR, "best_model.zip")
+    dst = os.path.join(_MODEL_DIR_BASE, "best_model.zip")
+    if os.path.exists(src):
+        shutil.copy2(src, dst)
+        print(f"Canonical    → {dst}  (latest best)")
 
     train_env.close()
     eval_env.close()
