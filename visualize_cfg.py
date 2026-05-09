@@ -44,7 +44,7 @@ def parse_args():
                         "Defaults to models_full/best_model if --obstacles, else models/best_model.")
     p.add_argument("--wind-type", default="calm", choices=WIND_CHOICES,
                    help="Initial wind type (default: calm).")
-    p.add_argument("--wind-speed", type=float, default=1.2,
+    p.add_argument("--wind-speed", type=float, default=1,
                    help="Wind speed scalar (default: 1.2).")
     p.add_argument("--wind-turbulence", type=float, default=0.3,
                    help="Wind turbulence intensity (default: 0.3).")
@@ -198,17 +198,23 @@ def main():
 
                 # Obstacle collision check — print once on entry, once on exit
                 if obs_pos is not None and obs_size is not None:
-                    dists = np.linalg.norm(obs_pos - drone_pos, axis=1) - obs_size
-                    currently_in = bool(np.any(dists < 0))
+                    box_pos = mj_data.qpos[7:10]
+                    drone_dists = np.linalg.norm(obs_pos - drone_pos, axis=1) - obs_size
+                    box_dists   = np.linalg.norm(obs_pos - box_pos,   axis=1) - obs_size
+                    currently_in = bool(np.any(drone_dists < 0) or np.any(box_dists < 0))
                     if currently_in and not in_obstacle:
-                        penetration = float(np.max(-dists))
+                        who = []
+                        if np.any(drone_dists < 0):
+                            who.append(f"drone (depth {float(np.max(-drone_dists)):.3f} m)")
+                        if np.any(box_dists < 0):
+                            who.append(f"box (depth {float(np.max(-box_dists)):.3f} m)")
                         print(
                             f"*** OBSTACLE HIT at step {step_count} | "
                             f"Drone ({drone_pos[0]:.2f}, {drone_pos[1]:.2f}, {drone_pos[2]:.2f}) | "
-                            f"penetration depth: {penetration:.3f} m ***"
+                            + " + ".join(who) + " ***"
                         )
                     elif not currently_in and in_obstacle:
-                        print(f"    (drone exited obstacle at step {step_count})")
+                        print(f"    (exited obstacle at step {step_count})")
                     in_obstacle = currently_in
 
                 if step_count % 100 == 0:

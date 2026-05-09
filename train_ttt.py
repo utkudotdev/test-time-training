@@ -1,6 +1,6 @@
-"""Phase 2: Train PPO + auxiliary dynamics-prediction head.
+"""Phase 3: Train PPO + auxiliary dynamics-prediction head.
 
-Loads the pretrained no-wind policy (models/best_model.zip), transfers its
+Loads models_obs/best_model (CALM_ONLY) or models_full/best_model, transfers
 weights into WindAwarePolicy, then fine-tunes with:
   total_loss = ppo_loss  (handled by SB3)
   aux update = separate Adam step on AuxLossCallback (after each rollout)
@@ -32,24 +32,26 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from env import DroneDeliveryEnv
 from policy_ttt import WindAwarePolicy, VEL_IDX, ACCEL_IDX
-from train_full import CurriculumCallback, CURRICULUM, ALL_WIND_TYPES
+from train_full import CurriculumCallback, TrainLogCallback, CURRICULUM
 
 
 N_ENVS = 8
-TOTAL_STEPS = 1_500_000
+TOTAL_STEPS = 1_300_000
 AUX_LR = 3e-4
 AUX_COEF = 0.1  # weight on aux loss (relative to keeping ppo scale)
 _RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOG_DIR = f"logs_ttt/{_RUN_TS}"
 MODEL_DIR = f"models_ttt/{_RUN_TS}"
 _MODEL_DIR_BASE = "models_ttt"  # canonical best_model lives here for adapt.py
-PRETRAIN_PATH = "models/best_model"  # no-wind pretrained checkpoint
 
-# --- Curriculum selection ---
-# CALM_ONLY=True: train only on calm wind; rely entirely on test-time adaptation
-#   for cold_front / squall / thermal / jet_stream / cyclone.
-# CALM_ONLY=False: use the full domain-randomised curriculum from train_full.py.
+# CALM_ONLY=True:  train only on calm wind; rely on TTT for OOD winds.
+#                  Encoder specializes to calm → OOD aux loss stays high → strong adaptation signal.
+# CALM_ONLY=False: full domain-randomised curriculum; encoder sees all winds during training.
 CALM_ONLY = True
+
+# CALM_ONLY=True  → start from obstacle-trained baseline (models_obs); encoder stays calm-only
+# CALM_ONLY=False → start from full model (models_full); already has all-wind knowledge
+PRETRAIN_PATH = "models_obs/best_model" if CALM_ONLY else "models_full/best_model"
 
 CALM_CURRICULUM = [
     (0,       dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
@@ -150,10 +152,10 @@ def main():
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    train_env = SubprocVecEnv([make_env(with_obstacles=False) for _ in range(N_ENVS)])
+    train_env = SubprocVecEnv([make_env(with_obstacles=True) for _ in range(N_ENVS)])
     train_env = VecMonitor(train_env, filename=os.path.join(LOG_DIR, "train_monitor"))
 
-    eval_env = SubprocVecEnv([make_env(with_obstacles=False)])
+    eval_env = SubprocVecEnv([make_env(with_obstacles=True)])
     eval_env = VecMonitor(eval_env, filename=os.path.join(LOG_DIR, "eval_monitor"))
     eval_env.env_method("set_wind", "calm", 1.0, 0.3)
 
@@ -172,7 +174,7 @@ def main():
         max_grad_norm=0.5,
         policy_kwargs=dict(net_arch=[256, 256], aux_hidden=64),
         tensorboard_log=LOG_DIR,
-        verbose=1,
+        verbose=0,
         device="cpu",
     )
 
@@ -190,6 +192,7 @@ def main():
     callbacks = [
         AuxLossCallback(aux_coef=AUX_COEF, lr=AUX_LR, verbose=1),
         CurriculumCallback(train_env, curriculum=active_curriculum, verbose=1),
+        TrainLogCallback(active_curriculum, total_steps=TOTAL_STEPS),
         CheckpointCallback(
             save_freq=max(100_000 // N_ENVS, 1),
             save_path=MODEL_DIR,

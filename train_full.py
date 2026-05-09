@@ -1,11 +1,12 @@
-"""Train PPO with obstacle + wind curriculum, warm-started from train.py baseline.
+"""Train PPO with wind curriculum, warm-started from models_obs/best_model.
+
+Assumes train_obs.py has already run (obstacle avoidance is pre-baked).
 
 Curriculum phases (timesteps from the START of this script):
-  Phase 0 —       0 … 200 k: obstacles, no wind  — learn avoidance before adding disturbance
-  Phase 1 —  200 k … 400 k:  calm speed=0.3      — barely-noticeable gusts
-  Phase 2 —  400 k … 700 k:  calm speed=0.6      — moderate push
-  Phase 3 —  700 k … 1.0 M:  calm speed=1.0      — full strength
-  Phase 4 — 1.0 M … 1.5 M:  domain-randomised wind, speed 0.5–1.0
+  Phase 0 —       0 … 200 k:  calm speed=0.3      — barely-noticeable gusts
+  Phase 1 —  200 k … 500 k:  calm speed=0.6      — moderate push
+  Phase 2 —  500 k … 800 k:  calm speed=1.0      — full strength
+  Phase 3 —  800 k … 1.3 M:  domain-randomised wind, speed 0.3–1.0
 
 Run:
   uv run python train_full.py
@@ -31,23 +32,22 @@ from env import DroneDeliveryEnv
 
 
 N_ENVS = 8
-TOTAL_TIMESTEPS = 1_500_000
+TOTAL_TIMESTEPS = 1_300_000
 LOG_FREQ = 25_000        # print a log line every this many timesteps
 _RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOG_DIR = f"logs_full/{_RUN_TS}"
 MODEL_DIR = f"models_full/{_RUN_TS}"
 _MODEL_DIR_BASE = "models_full"
 
-PRETRAIN_PATH = "models/best_model"
+PRETRAIN_PATH = "models_obs/best_model"
 
 TRAIN_WIND_TYPES = ["calm", "cold_front", "squall", "cyclone"]
 
 CURRICULUM = [
-    (0,         dict(phase="obstacles_only")),
-    (200_000,   dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
-    (400_000,   dict(phase="calm_medium", wind_type="calm", speed=0.6, turbulence=0.15)),
-    (700_000,   dict(phase="calm_full",   wind_type="calm", speed=1.0, turbulence=0.3)),
-    (1_000_000, dict(phase="randomize")),
+    (0,       dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
+    (200_000, dict(phase="calm_medium", wind_type="calm", speed=0.6, turbulence=0.15)),
+    (500_000, dict(phase="calm_full",   wind_type="calm", speed=1.0, turbulence=0.3)),
+    (800_000, dict(phase="randomize")),
 ]
 
 
@@ -74,11 +74,7 @@ class CurriculumCallback(BaseCallback):
 
     def _apply_phase(self, cfg):
         phase = cfg["phase"]
-        if phase == "obstacles_only":
-            self.train_env.env_method("set_wind", "none", 0.0, 0.0)
-            if self.verbose:
-                print(f"\n[Curriculum] → obstacles_only  (no wind)")
-        elif phase == "randomize":
+        if phase == "randomize":
             self.train_env.env_method(
                 "enable_wind_randomization",
                 TRAIN_WIND_TYPES,
@@ -108,9 +104,10 @@ class CurriculumCallback(BaseCallback):
 class TrainLogCallback(BaseCallback):
     """Prints a compact log line every LOG_FREQ timesteps."""
 
-    def __init__(self, curriculum, log_freq=LOG_FREQ):
+    def __init__(self, curriculum, total_steps=TOTAL_TIMESTEPS, log_freq=LOG_FREQ):
         super().__init__(verbose=0)
         self._curriculum = curriculum
+        self._total_steps = total_steps
         self._log_freq = log_freq
         self._last_log = 0
 
@@ -132,9 +129,9 @@ class TrainLogCallback(BaseCallback):
 
         mean_rew = float(np.mean([ep["r"] for ep in buf]))
         mean_len = float(np.mean([ep["l"] for ep in buf]))
-        progress = self.num_timesteps / TOTAL_TIMESTEPS * 100
+        progress = self.num_timesteps / self._total_steps * 100
         print(
-            f"[{self.num_timesteps:>9,} / {TOTAL_TIMESTEPS:,}  {progress:4.1f}%]  "
+            f"[{self.num_timesteps:>9,} / {self._total_steps:,}  {progress:4.1f}%]  "
             f"phase={self._phase_name():<16}  "
             f"ep_rew={mean_rew:>8.1f}  ep_len={mean_len:>6.1f}"
         )

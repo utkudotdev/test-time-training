@@ -41,9 +41,10 @@ obs(33D) = raw_obs(27D) ++ wind_context(6D)
 | `env_drone.py` | Drone-only env for sanity checking |
 | `controller.py` | Cascaded PD attitude controller |
 | `wind_sim.py` | Wind patterns: `calm`, `cold_front`, `squall`, `thermal`, `jet_stream`, `cyclone`, `none` |
-| `train.py` | PPO baseline — no wind, confirms delivery works |
-| `train_full.py` | PPO with wind curriculum, warm-started from baseline |
-| `train_ttt.py` | PPO + auxiliary dynamics-prediction head (Phase 2) |
+| `train.py` | PPO baseline — no wind, no obstacles |
+| `train_obs.py` | Fine-tune on obstacles (no wind); output is shared warm-start |
+| `train_full.py` | PPO with wind curriculum, warm-started from `models_obs` |
+| `train_ttt.py` | PPO + auxiliary dynamics-prediction head (Phase 3) |
 | `adapt.py` | Test-time adaptation: fast, gradient, and adaptive modes |
 | `eval.py` | Headless evaluation |
 | `visualize_mujoco.py` | MuJoCo viewer — set `MODEL_PATH` and `WIND_TYPE` at top |
@@ -52,34 +53,44 @@ obs(33D) = raw_obs(27D) ++ wind_context(6D)
 
 ## Workflow
 
-### 1. Train baseline (no wind)
+### 1. Train baseline (no wind, no obstacles)
 
 ```bash
 uv run python train.py
 uv run tensorboard --logdir logs/ --host 127.0.0.1
 ```
 
-Saves `models/best_model.zip`. Reaches ~8500 reward/episode.
+Saves `models/best_model.zip`. Learns basic navigation (~8500 reward/episode).
 
-### 2. Train with wind curriculum
+### 2. Add obstacle avoidance
+
+```bash
+uv run python train_obs.py
+uv run tensorboard --logdir logs_obs/
+```
+
+Warm-starts from `models/best_model.zip`, trains 200 k steps with obstacles and no wind.
+Saves `models_obs/best_model.zip` — shared warm-start for all downstream scripts.
+
+### 3. Train with wind curriculum
 
 ```bash
 uv run python train_full.py
 uv run tensorboard --logdir logs_full/
 ```
 
-Warm-starts from `models/best_model.zip`, then adds wind progressively:
+Warm-starts from `models_obs/best_model.zip`, then adds wind progressively:
 
 | Steps | Wind |
 | --- | --- |
 | 0–200 k | calm, speed=0.3 |
 | 200–500 k | calm, speed=0.6 |
 | 500–800 k | calm, speed=1.0 |
-| 800 k–1.5 M | domain-randomised (calm / cold\_front / squall) |
+| 800 k–1.3 M | domain-randomised (calm / cold\_front / squall / cyclone) |
 
 Each run saves to a timestamped subdirectory `models_full/YYYYMMDD_HHMMSS/`. The best checkpoint is also copied to `models_full/best_model.zip` for easy access.
 
-### 3. Train TTT policy (aux head)
+### 4. Train TTT policy (aux head)
 
 ```bash
 uv run python train_ttt.py
@@ -97,16 +108,18 @@ The aux head is trained jointly with PPO on a **separate optimizer** so it doesn
 
 Each run saves to a timestamped subdirectory `models_ttt/YYYYMMDD_HHMMSS/`. The best checkpoint is also copied to `models_ttt/best_model.zip`.
 
+Warm-starts from `models_obs/best_model.zip` (CALM_ONLY=True) or `models_full/best_model.zip` (CALM_ONLY=False).
+
 #### Curriculum modes
 
 Set `CALM_ONLY` at the top of `train_ttt.py`:
 
-| `CALM_ONLY` | Curriculum | Use when |
-| --- | --- | --- |
-| `True` (default) | calm only (gentle → full strength) | rely entirely on TTT to handle all other winds |
-| `False` | full domain-randomised (calm / cold\_front / squall) | bake more wind resistance into the policy |
+| `CALM_ONLY` | Pretrain | Curriculum | Use when |
+| --- | --- | --- | --- |
+| `True` (default) | `models_obs/best_model` | calm only (gentle → full strength) | rely entirely on TTT to handle all other winds |
+| `False` | `models_full/best_model` | full domain-randomised (calm / cold\_front / squall / cyclone) | bake more wind resistance into the policy |
 
-### 4. Test-time adaptation
+### 5. Test-time adaptation
 
 ```bash
 uv run python adapt.py
@@ -144,7 +157,7 @@ The aux loss is a **wind-novelty detector**. The threshold `MIN_AUX_LOSS = 0.55`
 
 Key: high aux loss alone doesn't mean the policy is struggling (jet\_stream=0.503 with zero-shot 11775). The policy can navigate a dynamically novel wind without needing the encoder to shift. Only adapt when the aux loss is high *and* the task is failing zero-shot.
 
-### 5. Visualize
+### 6. Visualize
 
 ```bash
 # Configurable viewer (recommended) — choose wind, obstacles, model via flags
@@ -188,7 +201,7 @@ Wind force scale is `2×` the raw wind function output (calibrated so speed=1.0 
 | Angular velocity damp | `−0.05 × ‖ω‖` |
 | Stillness near goal | `−0.5 × (1.5−d) × ‖v‖` if d < 1.5 |
 | Tiered bonuses | +2 (d<0.5), +5 (d<0.3) |
-| Delivery bonus | +10 (box<0.5 m), +25 (box<0.2 m) |
+| Delivery bonus | +25 (box<0.5 m) |
 | Hit obstacle | −500 (terminal) |
 | Crash / out-of-bounds | −100 (terminal) |
 | Delivered | +100 (terminal) |
@@ -202,7 +215,7 @@ Wind force scale is `2×` the raw wind function output (calibrated so speed=1.0 
 | Too much tilting in strong wind | Raise tilt penalty `10×` → `15×` |
 | Overshoots goal | Raise stillness coef `0.5×` → `1.0×` |
 | Drone still flies through obstacles | Raise obstacle penalty −500 → −1000 |
-| Delivery never triggered | Check box\_to\_goal thresholds (0.5 m, 0.2 m) |
+| Delivery never triggered | Check box\_to\_goal threshold (0.5 m) |
 
 ## Model directory layout
 

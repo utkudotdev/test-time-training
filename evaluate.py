@@ -42,14 +42,14 @@ GRAD_LR          = 5e-4
 GRAD_CLIP        = 0.5
 PROX_LAMBDA      = 0.5
 EARLY_STOP_DELTA = 1e-3
-MIN_AUX_LOSS     = 0.55
+MIN_AUX_LOSS     = 0.1
 
 
 # ── Evaluation helpers ─────────────────────────────────────────────────────────
 
 def evaluate_policy(model, env, n_episodes):
-    """Returns (mean_r, std_r, delivery_rate, mean_ep_len)."""
-    rewards, delivered, lengths = [], [], []
+    """Returns (mean_r, std_r, delivery_rate, obs_hit_rate, crash_rate, mean_ep_len)."""
+    rewards, delivered, crashes, lengths = [], [], [], []
     for _ in range(n_episodes):
         obs, _ = env.reset()
         ep_r, steps, reason = 0.0, 0, ""
@@ -64,11 +64,13 @@ def evaluate_policy(model, env, n_episodes):
             done = terminated or truncated
         rewards.append(ep_r)
         delivered.append(1.0 if reason == "delivered" else 0.0)
+        crashes.append(  1.0 if reason in ("hit_obstacle", "crashed") else 0.0)
         lengths.append(steps)
     return (
         float(np.mean(rewards)),
         float(np.std(rewards)),
         float(np.mean(delivered)),
+        float(np.mean(crashes)),
         float(np.mean(lengths)),
     )
 
@@ -181,10 +183,10 @@ def try_load(path, label):
 # ── Formatting ─────────────────────────────────────────────────────────────────
 
 W_COND = 22
-W_CELL = 20   # "NNNNN±NNN (NNN%)"
+W_CELL = 22   # "RRRRR(d:DD%|o:OO%|c:CC%)"
 
-def _cell(mean_r, std_r, del_rate):
-    return f"{mean_r:>6.0f}±{std_r:<4.0f}({del_rate*100:>3.0f}%)"
+def _cell(mean_r, del_rate, crash_rate):
+    return f"{mean_r:>6.0f}(d:{del_rate*100:>2.0f}%|x:{crash_rate*100:>2.0f}%)"
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -223,7 +225,7 @@ def main():
     sep = "-" * (W_COND + len(active_cols) * (W_CELL + 2) + (17 if m_ttt else 0))
 
     # ── Table header ──────────────────────────────────────────────────────────
-    print(f"\nMetrics: reward±std (delivery%)   n_eval={args.n_eval}  n_adapt={args.n_adapt}\n")
+    print(f"\nMetrics: reward(d:del%|o:obs_hit%|c:crash%)   obstacles=True  n_eval={args.n_eval}  n_adapt={args.n_adapt}\n")
     print(f"{'Condition':<{W_COND}}", end="")
     for col in active_cols:
         print(f"  {col:^{W_CELL}}", end="")
@@ -236,39 +238,42 @@ def main():
     for cond in TEST_CONDITIONS:
         label = cond["label"]
         kw = {k: v for k, v in cond.items() if k != "label"}
-        env = DroneDeliveryEnv(max_episode_steps=1000, with_wind=True, **kw)
+        env = DroneDeliveryEnv(
+            max_episode_steps=1000,
+            with_wind=True,
+            with_obstacles=True,
+            wind_type=str(kw["wind_type"]),
+            wind_speed=float(kw["wind_speed"]),
+            wind_turbulence=float(kw["wind_turbulence"]),
+        )
 
         cells = {}
 
         if m_base:
-            r, s, d, _ = evaluate_policy(copy.deepcopy(m_base), env, args.n_eval)
-            cells["no-wind"] = _cell(r, s, d)
+            r, _, d, c, _ = evaluate_policy(copy.deepcopy(m_base), env, args.n_eval)
+            cells["no-wind"] = _cell(r, d, c)
 
         if m_full:
-            r, s, d, _ = evaluate_policy(copy.deepcopy(m_full), env, args.n_eval)
-            cells["full-wind"] = _cell(r, s, d)
+            r, _, d, c, _ = evaluate_policy(copy.deepcopy(m_full), env, args.n_eval)
+            cells["full-wind"] = _cell(r, d, c)
 
         aux_str = step_str = ""
         if m_ttt:
-            # Collect rollouts once from the unmodified TTT model.
             rollouts = collect_rollouts(copy.deepcopy(m_ttt), env, args.n_adapt)
             aux_loss = compute_aux_loss(copy.deepcopy(m_ttt), rollouts)
 
-            # Zero-shot
-            r, s, d, _ = evaluate_policy(copy.deepcopy(m_ttt), env, args.n_eval)
-            cells["ttt-zs"] = _cell(r, s, d)
+            r, _, d, c, _ = evaluate_policy(copy.deepcopy(m_ttt), env, args.n_eval)
+            cells["ttt-zs"] = _cell(r, d, c)
 
-            # Fast TTT
             m_f = copy.deepcopy(m_ttt)
-            m_f, fast_steps, _ = ttt_fast(m_f, rollouts)
-            r, s, d, _ = evaluate_policy(m_f, env, args.n_eval)
-            cells["ttt-fast"] = _cell(r, s, d)
+            m_f, _, _ = ttt_fast(m_f, rollouts)
+            r, _, d, c, _ = evaluate_policy(m_f, env, args.n_eval)
+            cells["ttt-fast"] = _cell(r, d, c)
 
-            # Adaptive TTT
             m_a = copy.deepcopy(m_ttt)
             m_a, ada_steps, _ = ttt_adaptive(m_a, rollouts)
-            r, s, d, _ = evaluate_policy(m_a, env, args.n_eval)
-            cells["ttt-ada"] = _cell(r, s, d)
+            r, _, d, c, _ = evaluate_policy(m_a, env, args.n_eval)
+            cells["ttt-ada"] = _cell(r, d, c)
 
             skipped = aux_loss < MIN_AUX_LOSS
             aux_str  = f"{aux_loss:>8.3f}"
@@ -284,7 +289,7 @@ def main():
         env.close()
 
     print(sep)
-    print(f"\nDelivery threshold: box within 0.2 m of goal  |  aux skip threshold: {MIN_AUX_LOSS}\n")
+    print(f"\nDelivery: box<0.5m  |  o=hit_obstacle  |  c=ground_crash  |  aux_skip<{MIN_AUX_LOSS}\n")
 
 
 if __name__ == "__main__":

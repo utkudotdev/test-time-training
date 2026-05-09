@@ -206,8 +206,6 @@ class DroneDeliveryEnv(gym.Env):
 
         # Delivery bonus for BOX near goal (the actual task)
         if box_to_goal < 0.5:
-            reward += 10.0
-        if box_to_goal < 0.2:
             reward += 25.0
 
         return reward, drone_to_goal
@@ -221,11 +219,13 @@ class DroneDeliveryEnv(gym.Env):
         if drone_z < 0.05:
             return True, "crashed"
 
-        # Hit an obstacle
+        # Hit an obstacle (drone body or box)
         if self.obstacle_pos is not None and self.obstacle_size is not None:
             drone_pos = self.data.qpos[:3]
-            obs_distances = np.linalg.norm(self.obstacle_pos - drone_pos, axis=1) - self.obstacle_size
-            if np.any(obs_distances < 0):
+            box_pos   = self.data.qpos[7:10]
+            drone_dists = np.linalg.norm(self.obstacle_pos - drone_pos, axis=1) - self.obstacle_size
+            box_dists   = np.linalg.norm(self.obstacle_pos - box_pos,   axis=1) - self.obstacle_size
+            if np.any(drone_dists < 0) or np.any(box_dists < 0):
                 return True, "hit_obstacle"
 
         # Drifted too far (sanity)
@@ -234,7 +234,7 @@ class DroneDeliveryEnv(gym.Env):
             return True, "out_of_bounds"
 
         # Delivery success
-        if np.linalg.norm(box_pos - goal_pos) < 0.2:
+        if np.linalg.norm(box_pos - goal_pos) < 0.5:
             return True, "delivered"
 
         return False, ""
