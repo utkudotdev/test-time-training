@@ -1,26 +1,18 @@
-"""Train PPO with wind curriculum, starting from a pretrained no-wind checkpoint.
-
-Wind force scale: 2x (down from original 20x). With 2x the drone can physically
-resist speed=1.0 calm wind at all positions along the flight path (max ~6.5 N vs
-8.9 N lateral authority). At 20x this was impossible — 65 N at the goal.
-
-Workflow:
-  1. Run train.py first (or use an existing models/best_model.zip).
-  2. Run this script — it loads that checkpoint then adds wind progressively.
+"""Train PPO with obstacle + wind curriculum, warm-started from train.py baseline.
 
 Curriculum phases (timesteps from the START of this script):
-  Phase 0 —      0 … 200 k: calm speed=0.3  — barely-noticeable gusts
-  Phase 1 — 200 k … 500 k:  calm speed=0.6  — moderate push (~3.9 N at goal)
-  Phase 2 — 500 k … 800 k:  calm speed=1.0  — full strength (~6.5 N at goal)
-  Phase 3 — 800 k … 1.5 M:  domain-randomised wind, speed 0.5–1.0
+  Phase 0 —       0 … 200 k: obstacles, no wind  — learn avoidance before adding disturbance
+  Phase 1 —  200 k … 400 k:  calm speed=0.3      — barely-noticeable gusts
+  Phase 2 —  400 k … 700 k:  calm speed=0.6      — moderate push
+  Phase 3 —  700 k … 1.0 M:  calm speed=1.0      — full strength
+  Phase 4 — 1.0 M … 1.5 M:  domain-randomised wind, speed 0.5–1.0
 
 Run:
   uv run python train_full.py
 Monitor:
   uv run tensorboard --logdir logs_full/
 Visualize:
-  Change MODEL_PATH in visualize_mujoco.py to "models_full/best_model" then:
-  uv run mjpython visualize_mujoco.py
+  uv run mjpython visualize_cfg.py --obstacles --wind-type calm
 """
 
 import os
@@ -40,44 +32,39 @@ from env import DroneDeliveryEnv
 
 N_ENVS = 8
 TOTAL_TIMESTEPS = 1_500_000
+LOG_FREQ = 25_000        # print a log line every this many timesteps
 _RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOG_DIR = f"logs_full/{_RUN_TS}"
 MODEL_DIR = f"models_full/{_RUN_TS}"
-_MODEL_DIR_BASE = "models_full"  # canonical best_model lives here for adapt.py
+_MODEL_DIR_BASE = "models_full"
 
-# Pretrained no-wind checkpoint to warm-start from
 PRETRAIN_PATH = "models/best_model"
 
-ALL_WIND_TYPES = ["calm", "cold_front", "squall", "thermal", "jet_stream", "cyclone"]
 TRAIN_WIND_TYPES = ["calm", "cold_front", "squall", "cyclone"]
-TEST_WIND_TYPES = [
-    "thermal",
-    "jet_stream",
-]  # only in final randomization phase; not seen during training but still within drone's control authority, so should be manageable with good generalization. Note that the two policies may have different action scales, so even if the pretrained model performs worse with these unseen wind types, it can still be qualitatively successful (i.e. can learn to hover and navigate before tackling the delivery task).
-# (start_timestep, config)
-# Wind forces with 2x multiplier are now within the drone's 8.9 N lateral budget.
+
 CURRICULUM = [
-    (0, dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
-    (200_000, dict(phase="calm_medium", wind_type="calm", speed=0.6, turbulence=0.15)),
-    (500_000, dict(phase="calm_full", wind_type="calm", speed=1.0, turbulence=0.3)),
-    (800_000, dict(phase="randomize")),
+    (0,         dict(phase="obstacles_only")),
+    (200_000,   dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
+    (400_000,   dict(phase="calm_medium", wind_type="calm", speed=0.6, turbulence=0.15)),
+    (700_000,   dict(phase="calm_full",   wind_type="calm", speed=1.0, turbulence=0.3)),
+    (1_000_000, dict(phase="randomize")),
 ]
 
 
-def make_env(seed=0, with_obstacles=False):
+def make_env(seed=0, with_obstacles=True):
     def _init():
-        return DroneDeliveryEnv(
+        env = DroneDeliveryEnv(
             max_episode_steps=1000,
             with_obstacles=with_obstacles,
             with_wind=False,  # curriculum callback enables wind
-            seed=seed,
         )
-
+        env.reset(seed=seed)
+        return env
     return _init
 
 
 class CurriculumCallback(BaseCallback):
-    """Advances wind curriculum and logs phase index to tensorboard."""
+    """Advances wind curriculum."""
 
     def __init__(self, train_env, curriculum=None, verbose=1):
         super().__init__(verbose)
@@ -87,15 +74,19 @@ class CurriculumCallback(BaseCallback):
 
     def _apply_phase(self, cfg):
         phase = cfg["phase"]
-        if phase == "randomize":
+        if phase == "obstacles_only":
+            self.train_env.env_method("set_wind", "none", 0.0, 0.0)
+            if self.verbose:
+                print(f"\n[Curriculum] → obstacles_only  (no wind)")
+        elif phase == "randomize":
             self.train_env.env_method(
                 "enable_wind_randomization",
                 TRAIN_WIND_TYPES,
-                (0.3, 1.0),  # speed range within drone's lateral control authority
+                (0.3, 1.0),
                 (0.05, 0.3),
             )
             if self.verbose:
-                print(f"\n[Curriculum] → domain-randomised wind {ALL_WIND_TYPES}")
+                print(f"\n[Curriculum] → randomize  types={TRAIN_WIND_TYPES}")
         else:
             self.train_env.env_method(
                 "set_wind", cfg["wind_type"], cfg["speed"], cfg["turbulence"]
@@ -105,13 +96,48 @@ class CurriculumCallback(BaseCallback):
                     f"\n[Curriculum] → {phase}  "
                     f"wind={cfg['wind_type']}  speed={cfg['speed']}  turb={cfg['turbulence']}"
                 )
-        self.logger.record("curriculum/phase_idx", self._current_phase_idx)
 
     def _on_step(self) -> bool:
         for i, (start_ts, cfg) in enumerate(self._curriculum):
             if self.num_timesteps >= start_ts and i > self._current_phase_idx:
                 self._current_phase_idx = i
                 self._apply_phase(cfg)
+        return True
+
+
+class TrainLogCallback(BaseCallback):
+    """Prints a compact log line every LOG_FREQ timesteps."""
+
+    def __init__(self, curriculum, log_freq=LOG_FREQ):
+        super().__init__(verbose=0)
+        self._curriculum = curriculum
+        self._log_freq = log_freq
+        self._last_log = 0
+
+    def _phase_name(self):
+        name = self._curriculum[0][1]["phase"]
+        for start_ts, cfg in self._curriculum:
+            if self.num_timesteps >= start_ts:
+                name = cfg["phase"]
+        return name
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self._last_log < self._log_freq:
+            return True
+        self._last_log = self.num_timesteps
+
+        buf = self.model.ep_info_buffer
+        if not buf:
+            return True
+
+        mean_rew = float(np.mean([ep["r"] for ep in buf]))
+        mean_len = float(np.mean([ep["l"] for ep in buf]))
+        progress = self.num_timesteps / TOTAL_TIMESTEPS * 100
+        print(
+            f"[{self.num_timesteps:>9,} / {TOTAL_TIMESTEPS:,}  {progress:4.1f}%]  "
+            f"phase={self._phase_name():<16}  "
+            f"ep_rew={mean_rew:>8.1f}  ep_len={mean_len:>6.1f}"
+        )
         return True
 
 
@@ -124,25 +150,21 @@ def main():
     )
     train_env = VecMonitor(train_env, filename=os.path.join(LOG_DIR, "train_monitor"))
 
-    # Eval env: fixed calm wind so comparison is consistent across all phases
     eval_env = SubprocVecEnv([make_env(100, with_obstacles=True)])
     eval_env = VecMonitor(eval_env, filename=os.path.join(LOG_DIR, "eval_monitor"))
     eval_env.env_method("set_wind", "calm", 1.0, 0.3)
 
-    # Load pretrained checkpoint so phase 0 (basic navigation) is already solved
     if os.path.exists(PRETRAIN_PATH + ".zip"):
-        print(f"Loading pretrained model from {PRETRAIN_PATH}.zip")
+        print(f"Warm-starting from {PRETRAIN_PATH}.zip")
         model = PPO.load(
             PRETRAIN_PATH,
             env=train_env,
             tensorboard_log=LOG_DIR,
-            # keep original hyperparams; lower LR for fine-tuning
             learning_rate=1e-4,
+            verbose=0,
         )
     else:
-        print(
-            f"No pretrained model found at {PRETRAIN_PATH}.zip — training from scratch."
-        )
+        print(f"No pretrained model at {PRETRAIN_PATH}.zip — training from scratch.")
         print("Tip: run train.py first for best results.")
         model = PPO(
             "MlpPolicy",
@@ -159,11 +181,18 @@ def main():
             max_grad_norm=0.5,
             policy_kwargs=dict(net_arch=[256, 256]),
             tensorboard_log=LOG_DIR,
-            verbose=1,
+            verbose=0,
         )
+
+    print(f"\nTraining for {TOTAL_TIMESTEPS:,} steps  ({N_ENVS} envs)")
+    print("Curriculum:")
+    for ts, cfg in CURRICULUM:
+        print(f"  {ts:>9,}  →  {cfg['phase']}")
+    print()
 
     callbacks = [
         CurriculumCallback(train_env, verbose=1),
+        TrainLogCallback(CURRICULUM, log_freq=LOG_FREQ),
         CheckpointCallback(
             save_freq=max(100_000 // N_ENVS, 1),
             save_path=MODEL_DIR,
@@ -177,33 +206,27 @@ def main():
             n_eval_episodes=5,
             deterministic=True,
             render=False,
+            verbose=0,
         ),
     ]
-
-    print(f"Fine-tuning for {TOTAL_TIMESTEPS:,} steps across {N_ENVS} envs")
-    print("Curriculum:")
-    for ts, cfg in CURRICULUM:
-        print(f"  {ts:>8,}  →  {cfg['phase']}")
 
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,
         callback=callbacks,
-        reset_num_timesteps=True,  # curriculum counts from 0 in this run
+        reset_num_timesteps=True,
     )
 
     final_path = os.path.join(MODEL_DIR, "ppo_full")
     model.save(final_path)
-    print(f"\nFinal model  → {final_path}.zip")
-    print(f"Best model   → {MODEL_DIR}/best_model.zip")
+    print(f"\nFinal  → {final_path}.zip")
+    print(f"Best   → {MODEL_DIR}/best_model.zip")
 
-    # Copy best_model to canonical path so visualize_mujoco.py / adapt.py can
-    # reference models_full/best_model without knowing the run timestamp.
     os.makedirs(_MODEL_DIR_BASE, exist_ok=True)
     src = os.path.join(MODEL_DIR, "best_model.zip")
     dst = os.path.join(_MODEL_DIR_BASE, "best_model.zip")
     if os.path.exists(src):
         shutil.copy2(src, dst)
-        print(f"Canonical    → {dst}  (latest best)")
+        print(f"Canon  → {dst}")
 
     train_env.close()
     eval_env.close()
