@@ -1,5 +1,8 @@
 # Drone Package Delivery — RL + Test-Time Training
 
+smth to look into: the rate_controller.py might be a good replacement for the PD controller
+
+
 PPO policy for a Skydio X2 drone (with a 1 kg box on a tendon) flying to a goal in MuJoCo.
 The main research question: can a policy trained on calm wind adapt to unseen wind conditions at test time, using only self-supervised dynamics prediction — no reward signal?
 
