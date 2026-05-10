@@ -33,7 +33,7 @@ from env import DroneDeliveryEnv
 
 
 N_ENVS          = 8
-TOTAL_TIMESTEPS = 200_000
+TOTAL_TIMESTEPS = 1000000
 LOG_FREQ        = 25_000
 PRETRAIN_PATH   = "models/best_model"
 

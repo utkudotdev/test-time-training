@@ -42,11 +42,11 @@ N_EVAL_EPISODES  = 5
 GRAD_STEPS_MAX   = 50
 GRAD_LR          = 5e-4
 GRAD_CLIP        = 0.5
-PROX_LAMBDA      = 0.5
+PROX_LAMBDA      = 1.0   # raised from 0.5 — stronger proximal anchor prevents encoder drift
 EARLY_STOP_DELTA = 1e-3
-# Calibrate after retraining: set to a value between calm aux-loss and lowest OOD aux-loss.
-# With a correctly trained calm-only model, calm≈0.2 and OOD≈0.5–0.8 → 0.35 is a good start.
-MIN_AUX_LOSS     = 0.15
+# Set above in-dist (calm) aux_loss so calm is never adapted.
+# Current calm aux_loss ≈ 0.26 → threshold 0.31 skips calm, adapts squall (0.34+).
+MIN_AUX_LOSS     = 0.31
 
 
 # ---------------------------------------------------------------------------

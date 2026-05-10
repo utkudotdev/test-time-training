@@ -41,12 +41,12 @@ _MODEL_DIR_BASE = "models_full"
 
 PRETRAIN_PATH = "models_obs/best_model"
 
-TRAIN_WIND_TYPES = ["calm", "cold_front", "squall", "cyclone"]
+TRAIN_WIND_TYPES = ["calm", "cold_front", "squall", "cyclone", "thermal", "jet_stream"]
 
 CURRICULUM = [
-    (0,       dict(phase="calm_gentle", wind_type="calm", speed=0.3, turbulence=0.05)),
-    (200_000, dict(phase="calm_medium", wind_type="calm", speed=0.6, turbulence=0.15)),
-    (500_000, dict(phase="calm_full",   wind_type="calm", speed=1.0, turbulence=0.3)),
+    (0,       dict(phase="calm_gentle", wind_type="calm", speed=0.8, turbulence=0.05)),
+    (200_000, dict(phase="calm_medium", wind_type="calm", speed=1.2, turbulence=0.15)),
+    (500_000, dict(phase="calm_full",   wind_type="calm", speed=2.0, turbulence=0.3)),
     (800_000, dict(phase="randomize")),
 ]
 

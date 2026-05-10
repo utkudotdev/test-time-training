@@ -40,9 +40,11 @@ GRAD_STEPS_FAST  = 30
 GRAD_STEPS_FULL  = 50
 GRAD_LR          = 5e-4
 GRAD_CLIP        = 0.5
-PROX_LAMBDA      = 0.5
+PROX_LAMBDA      = 1.0   # raised from 0.5 — stronger proximal anchor prevents encoder drift
 EARLY_STOP_DELTA = 1e-3
-MIN_AUX_LOSS     = 0.1
+# Set above the in-dist (calm) aux_loss (~0.26) so adaptation never touches calm.
+# Calibrate to just below the lowest OOD condition you want to adapt (squall ~0.34).
+MIN_AUX_LOSS     = 0.31
 
 
 # ── Evaluation helpers ─────────────────────────────────────────────────────────
@@ -193,7 +195,7 @@ def _cell(mean_r, del_rate, crash_rate):
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate all policy variants on all wind conditions")
-    parser.add_argument("--baseline", default="models/best_model",
+    parser.add_argument("--baseline", default="models_obs/best_model",
                         help="No-wind pretrained model (no .zip)")
     parser.add_argument("--full",     default="models_full/best_model",
                         help="Wind-curriculum model (no .zip)")
@@ -203,8 +205,10 @@ def main():
                         help="Episodes per evaluation (default: 5)")
     parser.add_argument("--n-adapt",  type=int, default=10,
                         help="Rollout episodes for TTT adaptation data (default: 10)")
-    parser.add_argument("--no-ttt",   action="store_true",
+    parser.add_argument("--no-ttt",      action="store_true",
                         help="Skip TTT variants (faster run)")
+    parser.add_argument("--obstacles",   action="store_true", default=False,
+                        help="Enable obstacle field (default: off for fair comparison)")
     args = parser.parse_args()
 
     print("\nLoading models...")
@@ -225,7 +229,8 @@ def main():
     sep = "-" * (W_COND + len(active_cols) * (W_CELL + 2) + (17 if m_ttt else 0))
 
     # ── Table header ──────────────────────────────────────────────────────────
-    print(f"\nMetrics: reward(d:del%|o:obs_hit%|c:crash%)   obstacles=True  n_eval={args.n_eval}  n_adapt={args.n_adapt}\n")
+    obs_label = "obstacles=ON (--obstacles)" if args.obstacles else "obstacles=OFF (pass --obstacles to enable)"
+    print(f"\nMetrics: reward(d:del%|x:crash%)   {obs_label}  n_eval={args.n_eval}  n_adapt={args.n_adapt}\n")
     print(f"{'Condition':<{W_COND}}", end="")
     for col in active_cols:
         print(f"  {col:^{W_CELL}}", end="")
@@ -241,7 +246,7 @@ def main():
         env = DroneDeliveryEnv(
             max_episode_steps=1000,
             with_wind=True,
-            with_obstacles=True,
+            with_obstacles=args.obstacles,
             wind_type=str(kw["wind_type"]),
             wind_speed=float(kw["wind_speed"]),
             wind_turbulence=float(kw["wind_turbulence"]),
