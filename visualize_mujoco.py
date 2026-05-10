@@ -14,13 +14,25 @@ from env import build_scene_spec, HOVER_THRUST, GOAL_POSITION, DroneDeliveryEnv
 from controller import cascaded_control
 
 
-MODEL_PATH = "models/best_model"  # falls back to ppo_delivery if not found
-WITH_OBSTACLES = False
-WITH_WIND = False                  # set True to test with weather (use WIND_TYPE below)
-WIND_TYPE = "calm"                 # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
-WIND_SPEED = 1.0
+# MODEL_PATH = "models_full/ppo_full_1500000_steps"  # falls back to ppo_delivery if not found
+# MODEL_PATH = "models_full/best_model"  # trained on full env with obstacles/wind; should perform better in this visualization than ppo_delivery.zip, which was trained on drone-only env. Note that the two policies may have different action scales, so ppo_delivery.zip may perform worse but still be qualitatively successful (i.e. can learn to hover and navigate before tackling the delivery task).
+MODEL_PATH = "models/best_model"
+WITH_OBSTACLES = True
+WITH_WIND = True                 # set True to test with weather (use WIND_TYPE below)
+WIND_TYPE = "calm"
+WIND_SPEED = 1.2
 WIND_TURBULENCE = 0.3
-SHOW_WIND_LINES = False            # toggle with `W` key
+SHOW_WIND_LINES = False  # toggle with `W` key
+
+WIND_KEYS = {
+    "1": "calm",
+    "2": "cold_front",
+    "3": "squall",
+    "4": "thermal",
+    "5": "jet_stream",
+    "6": "cyclone",
+    "7": "none",
+}
 
 
 def get_sensor(model, data, name):
@@ -42,17 +54,24 @@ def build_observation(model, data, goal_geom_id, last_action):
     box_rel_vel_body = rot(data.qvel[6:9].copy() - data.qvel[:3].copy(), quat)
     goal_vec_body = rot(goal_pos - drone_pos, quat)
 
-    return np.concatenate([
-        [drone_pos[2]], quat, lin_vel_body,
-        get_sensor(model, data, "body_gyro"),
-        get_sensor(model, data, "body_linacc"),
-        box_rel_pos_body, box_rel_vel_body, goal_vec_body,
-        last_action,
-    ]).astype(np.float32)
+    return np.concatenate(
+        [
+            [drone_pos[2]],
+            quat,
+            lin_vel_body,
+            get_sensor(model, data, "body_gyro"),
+            get_sensor(model, data, "body_linacc"),
+            box_rel_pos_body,
+            box_rel_vel_body,
+            goal_vec_body,
+            last_action,
+        ]
+    ).astype(np.float32)
 
 
 def load_policy():
     import os
+
     if os.path.exists(MODEL_PATH + ".zip"):
         print(f"Loading policy from {MODEL_PATH}.zip")
         return PPO.load(MODEL_PATH)
@@ -61,7 +80,7 @@ def load_policy():
 
 
 def main():
-    spec = build_scene_spec(seed=0, with_obstacles=WITH_OBSTACLES)
+    spec, _, _ = build_scene_spec(with_obstacles=WITH_OBSTACLES)
     model = spec.compile()
     data = mujoco.MjData(model)
 
@@ -79,9 +98,12 @@ def main():
     paused = False
     show_wind = SHOW_WIND_LINES
     step_count = 0
+    wind_field_fn = getattr(wind, f"wind_{WIND_TYPE}")
+    current_wind_type = WIND_TYPE
+    field_angle = 0.0
 
     def key_callback(keycode):
-        nonlocal paused, show_wind
+        nonlocal paused, show_wind, wind_field_fn, current_wind_type, field_angle
         c = chr(keycode)
         if c == " ":
             paused = not paused
@@ -96,12 +118,17 @@ def main():
             print("Reset.")
         elif c == "W":
             show_wind = not show_wind
-            print(f"Wind visualization: {'on' if show_wind else 'off'}")
+            print(f"Wind lines: {'on' if show_wind else 'off'}")
+        elif c in WIND_KEYS:
+            current_wind_type = WIND_KEYS[c]
+            wind_field_fn = getattr(wind, f"wind_{current_wind_type}")
+            field_angle = 0.0
+            print(f"Wind → {current_wind_type}")
 
-    print("Controls: SPACE=pause  R=reset  W=toggle wind lines")
+    print("Controls: SPACE=pause  R=reset  W=wind lines  1-7=switch wind type")
+    print("  1=calm  2=cold_front  3=squall  4=thermal  5=jet_stream  6=cyclone  7=none")
 
     last_action = np.zeros(4, dtype=np.float32)
-    wind_field_fn = getattr(wind, f"wind_{WIND_TYPE}")
 
     with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as viewer:
         viewer.sync()
@@ -113,11 +140,12 @@ def main():
                 if WITH_WIND:
                     for body_id in range(1, model.nbody):
                         pos = data.xpos[body_id]
-                        fx, fy = wind_field_fn(
-                            pos, data.time, WIND_SPEED, WIND_TURBULENCE, 0.0
+                        fx, fy, fz = wind_field_fn(
+                            pos, data.time, WIND_SPEED, WIND_TURBULENCE, field_angle
                         )
-                        data.xfrc_applied[body_id, 0] = 20 * fx
-                        data.xfrc_applied[body_id, 1] = 20 * fy
+                        data.xfrc_applied[body_id, 0] = 2 * fx
+                        data.xfrc_applied[body_id, 1] = 2 * fy
+                        data.xfrc_applied[body_id, 2] = 2 * fz
 
                 # Cascaded control: policy action → motors via PD
                 obs = build_observation(model, data, goal_geom_id, last_action)
@@ -141,8 +169,13 @@ def main():
 
             if show_wind:
                 wind.update_wind_lines(
-                    viewer, model, wind_field_fn, data,
-                    WIND_SPEED, WIND_TURBULENCE, 0.0,
+                    viewer,
+                    model,
+                    wind_field_fn,
+                    data,
+                    WIND_SPEED,
+                    WIND_TURBULENCE,
+                    field_angle,
                 )
             viewer.sync()
 

@@ -8,16 +8,18 @@ from controller import cascaded_control
 
 
 GOAL_POSITION = np.array([10.0, 0.0, 2.0])
-NUM_OBSTACLES = 10
-OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 10.0]])
+NUM_OBSTACLES = 50
+OBSTACLE_REGION = np.array([[0.5, -10.0, 0.0], [10.0, 10.0, 5.0]])
 OBSTACLE_RADIUS_RANGE = np.array([0.2, 1.5])
 
 # Calibrated hover thrust for drone + suspended box system (verified by binary search).
 # At this per-motor thrust with cascaded PD control, drone+box holds altitude.
 HOVER_THRUST = 5.702
 
+SCENE_SEED = 0
 
-def build_scene_spec(seed=None, with_obstacles=True):
+
+def build_scene_spec(with_obstacles=True):
     """Build scene programmatically: floor, drone, box, goal, obstacles."""
     spec = mujoco.MjSpec.from_file("example.xml")
 
@@ -32,7 +34,7 @@ def build_scene_spec(seed=None, with_obstacles=True):
     )
 
     if with_obstacles:
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(SCENE_SEED)
         obs_pos = rng.uniform(
             low=OBSTACLE_REGION[0], high=OBSTACLE_REGION[1], size=(NUM_OBSTACLES, 3)
         )
@@ -51,7 +53,9 @@ def build_scene_spec(seed=None, with_obstacles=True):
                 conaffinity=0,
             )
 
-    return spec
+        return spec, obs_pos, obs_size
+
+    return spec, None, None
 
 
 class DroneDeliveryEnv(gym.Env):
@@ -63,15 +67,20 @@ class DroneDeliveryEnv(gym.Env):
 
     metadata = {"render_modes": [], "render_fps": 100}
 
+    # EMA coefficient for the rolling wind-context estimate.
+    # α=0.9 → context adapts over ~10 steps (~100 ms at 100 Hz).
+    CONTEXT_ALPHA = 0.9
+    CONTEXT_DIM = 6  # Δlin_vel(3) + Δaccel(3)
+
     def __init__(
         self,
         max_episode_steps=1000,
         with_obstacles=False,
         with_wind=True,
-        wind_type="calm",   # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
+        wind_type="calm",  # "none", "calm", "cold_front", "squall", "thermal", "jet_stream"
         wind_speed=1.0,
         wind_turbulence=0.3,
-        seed=None,
+        use_wind_context=False,
     ):
         self.max_episode_steps = max_episode_steps
         self.with_obstacles = with_obstacles
@@ -81,26 +90,33 @@ class DroneDeliveryEnv(gym.Env):
         self._wind_field_fn = getattr(wind, f"wind_{wind_type}")
         self._wind_angle = 0.0
         self.step_count = 0
+        self.use_wind_context = use_wind_context
 
         # Build scene and compile
-        spec = build_scene_spec(seed=seed, with_obstacles=with_obstacles)
+        spec, obs_pos, obs_size = build_scene_spec(with_obstacles=with_obstacles)
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
+        self.obstacle_pos = obs_pos
+        self.obstacle_size = obs_size
 
         # Cascaded action: [thrust_delta, roll, pitch, yaw] in [-1, 1]
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
 
-        # Obs (27D): z(1) + quat(4) + lin_vel_body(3) + gyro(3) + accel(3)
-        #          + box_rel_pos_body(3) + box_rel_vel_body(3) + goal_body(3) + last_action(4)
+        # Obs base (27D): z(1) + quat(4) + lin_vel_body(3) + gyro(3) + accel(3)
+        #               + box_rel_pos_body(3) + box_rel_vel_body(3) + goal_body(3) + last_action(4)
+        # With use_wind_context=True: +6D EMA of Δ[lin_vel, accel] → 33D total.
+        obs_dim = 27 + (self.CONTEXT_DIM if use_wind_context else 0)
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(27,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
         self.goal_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "goal")
         self._prev_drone_to_goal = 0.0
         self._last_action = np.zeros(4, dtype=np.float32)
+        # Rolling wind-context state (only used when use_wind_context=True)
+        self._wind_context = np.zeros(self.CONTEXT_DIM, dtype=np.float32)
 
     def _get_sensor(self, name):
         sensor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
@@ -112,11 +128,13 @@ class DroneDeliveryEnv(gym.Env):
     def _rotate_by_conj_quat(v, q):
         """Rotate v by conjugate of quat q=(w,x,y,z) — world → body frame."""
         w, x, y, z = q
-        R = np.array([
-            [1 - 2 * (y * y + z * z), 2 * (x * y + w * z),     2 * (x * z - w * y)],
-            [2 * (x * y - w * z),     1 - 2 * (x * x + z * z), 2 * (y * z + w * x)],
-            [2 * (x * z + w * y),     2 * (y * z - w * x),     1 - 2 * (x * x + y * y)],
-        ])
+        R = np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)],
+                [2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)],
+                [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)],
+            ]
+        )
         return R @ v
 
     def _get_obs(self):
@@ -132,17 +150,22 @@ class DroneDeliveryEnv(gym.Env):
         )
         goal_vec_body = self._rotate_by_conj_quat(goal_pos - drone_pos, quat)
 
-        return np.concatenate([
-            [drone_pos[2]],
-            quat,
-            lin_vel_body,
-            self._get_sensor("body_gyro"),
-            self._get_sensor("body_linacc"),
-            box_rel_pos_body,
-            box_rel_vel_body,
-            goal_vec_body,
-            self._last_action,
-        ]).astype(np.float32)
+        base = np.concatenate(
+            [
+                [drone_pos[2]],
+                quat,
+                lin_vel_body,
+                self._get_sensor("body_gyro"),
+                self._get_sensor("body_linacc"),
+                box_rel_pos_body,
+                box_rel_vel_body,
+                goal_vec_body,
+                self._last_action,
+            ]
+        ).astype(np.float32)
+        if self.use_wind_context:
+            return np.concatenate([base, self._wind_context])
+        return base
 
     def _compute_reward(self, drone_to_goal_prev):
         drone_pos = self.data.qpos[:3]
@@ -176,12 +199,14 @@ class DroneDeliveryEnv(gym.Env):
             reward -= 0.5 * (1.5 - drone_to_goal) * np.linalg.norm(self.data.qvel[:3])
 
         # Tiered bonuses for drone near goal
-        if drone_to_goal < 0.5: reward += 2.0
-        if drone_to_goal < 0.3: reward += 5.0
+        if drone_to_goal < 0.5:
+            reward += 2.0
+        if drone_to_goal < 0.3:
+            reward += 5.0
 
         # Delivery bonus for BOX near goal (the actual task)
-        if box_to_goal < 0.5: reward += 10.0
-        if box_to_goal < 0.2: reward += 25.0
+        if box_to_goal < 0.5:
+            reward += 25.0
 
         return reward, drone_to_goal
 
@@ -194,13 +219,22 @@ class DroneDeliveryEnv(gym.Env):
         if drone_z < 0.05:
             return True, "crashed"
 
+        # Hit an obstacle (drone body or box)
+        if self.obstacle_pos is not None and self.obstacle_size is not None:
+            drone_pos = self.data.qpos[:3]
+            box_pos   = self.data.qpos[7:10]
+            drone_dists = np.linalg.norm(self.obstacle_pos - drone_pos, axis=1) - self.obstacle_size
+            box_dists   = np.linalg.norm(self.obstacle_pos - box_pos,   axis=1) - self.obstacle_size
+            if np.any(drone_dists < 0) or np.any(box_dists < 0):
+                return True, "hit_obstacle"
+
         # Drifted too far (sanity)
         drone_xy = self.data.qpos[:2]
         if np.linalg.norm(drone_xy) > 30.0 or drone_z > 15.0:
             return True, "out_of_bounds"
 
         # Delivery success
-        if np.linalg.norm(box_pos - goal_pos) < 0.2:
+        if np.linalg.norm(box_pos - goal_pos) < 0.5:
             return True, "delivered"
 
         return False, ""
@@ -209,6 +243,12 @@ class DroneDeliveryEnv(gym.Env):
         super().reset(seed=seed)
         self.step_count = 0
         self._last_action = np.zeros(4, dtype=np.float32)
+
+        if getattr(self, "_randomize_wind", False):
+            wtype = self.np_random.choice(self._rand_wind_types)
+            spd = float(self.np_random.uniform(*self._rand_speed_range))
+            turb = float(self.np_random.uniform(*self._rand_turbulence_range))
+            self.set_wind(wtype, spd, turb)
 
         mujoco.mj_resetDataKeyframe(self.model, self.data, self.model.key("hover").id)
 
@@ -225,6 +265,15 @@ class DroneDeliveryEnv(gym.Env):
         goal_pos = self.data.geom_xpos[self.goal_geom]
         self._prev_drone_to_goal = float(np.linalg.norm(drone_pos - goal_pos))
 
+        if self.use_wind_context:
+            # Initialise context to current hover state so the first step has
+            # a meaningful baseline rather than a zero transient.
+            quat = self.data.qpos[3:7]
+            lin_vel = self._rotate_by_conj_quat(self.data.qvel[:3], quat)
+            self._wind_context = np.concatenate(
+                [lin_vel, self._get_sensor("body_linacc")]
+            ).astype(np.float32)
+
         return self._get_obs(), {}
 
     def step(self, action):
@@ -239,15 +288,32 @@ class DroneDeliveryEnv(gym.Env):
         if self.with_wind:
             for body_id in range(1, self.model.nbody):
                 pos = self.data.xpos[body_id]
-                fx, fy = self._wind_field_fn(
-                    pos, self.data.time, self.wind_speed,
-                    self.wind_turbulence, self._wind_angle,
+                fx, fy, fz = self._wind_field_fn(
+                    pos,
+                    self.data.time,
+                    self.wind_speed,
+                    self.wind_turbulence,
+                    self._wind_angle,
                 )
-                self.data.xfrc_applied[body_id, 0] = 20 * fx
-                self.data.xfrc_applied[body_id, 1] = 20 * fy
+                self.data.xfrc_applied[body_id, 0] = 2 * fx
+                self.data.xfrc_applied[body_id, 1] = 2 * fy
+                self.data.xfrc_applied[body_id, 2] = 2 * fz
 
         mujoco.mj_step(self.model, self.data)
         self._last_action = action
+
+        if self.use_wind_context:
+            quat = self.data.qpos[3:7]
+            lin_vel = self._rotate_by_conj_quat(self.data.qvel[:3], quat)
+            vel_accel = np.concatenate(
+                [lin_vel, self._get_sensor("body_linacc")]
+            ).astype(np.float32)
+            # EMA of level (not delta): converges to the persistent wind-distorted
+            # state even under constant wind. Delta-EMA → 0 in steady state.
+            self._wind_context = (
+                self.CONTEXT_ALPHA * self._wind_context
+                + (1.0 - self.CONTEXT_ALPHA) * vel_accel
+            )
 
         reward, self._prev_drone_to_goal = self._compute_reward(
             self._prev_drone_to_goal
@@ -255,15 +321,38 @@ class DroneDeliveryEnv(gym.Env):
         terminated, reason = self._check_termination()
         truncated = self.step_count >= self.max_episode_steps
 
-        # Strong penalty for crash or going out of bounds, bonus for delivery
+        # Terminal shaping: delivery bonus, crash penalty, obstacle penalty
+        # Obstacle penalty is 5× crash penalty — hitting an obstacle after accumulating
+        # up to ~1300 reward in a good episode must still be the worst outcome.
         if terminated:
             if reason == "delivered":
                 reward += 100.0
+            elif reason == "hit_obstacle":
+                reward -= 500.0
             else:
                 reward -= 100.0
 
         info = {"step_count": self.step_count, "termination": reason}
         return self._get_obs(), float(reward), bool(terminated), bool(truncated), info
+
+    def set_wind(self, wind_type="none", speed=1.0, turbulence=0.3):
+        """Hot-swap wind config (called by curriculum callback via env_method)."""
+        self.with_wind = wind_type != "none"
+        self._wind_field_fn = getattr(wind, f"wind_{wind_type}")
+        self.wind_speed = speed
+        self.wind_turbulence = turbulence
+
+    def enable_wind_randomization(
+        self,
+        types=("calm", "cold_front", "squall", "thermal", "jet_stream"),
+        speed_range=(0.5, 1.5),
+        turbulence_range=(0.1, 0.5),
+    ):
+        """Per-episode random wind type + strength (domain randomization)."""
+        self._randomize_wind = True
+        self._rand_wind_types = list(types)
+        self._rand_speed_range = speed_range
+        self._rand_turbulence_range = turbulence_range
 
     def render(self):
         pass

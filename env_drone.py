@@ -180,8 +180,8 @@ class DroneEnv(gym.Env):
                     pos, self.data.time, self.wind_speed,
                     self.wind_turbulence, self._wind_angle,
                 )
-                self.data.xfrc_applied[body_id, 0] = 20 * fx
-                self.data.xfrc_applied[body_id, 1] = 20 * fy
+                self.data.xfrc_applied[body_id, 0] = 2 * fx
+                self.data.xfrc_applied[body_id, 1] = 2 * fy
 
         mujoco.mj_step(self.model, self.data)
         self._last_action = action
@@ -204,6 +204,13 @@ class DroneEnv(gym.Env):
 
         info = {"dist": dist, "crashed": crashed, "oob": out_of_bounds}
         return obs, float(reward), terminated, truncated, info
+
+    def set_wind(self, wind_type="none", speed=1.0, turbulence=0.3):
+        """Hot-swap wind config (called by curriculum callback via env_method)."""
+        self.with_wind = wind_type != "none"
+        self._wind_field_fn = getattr(wind, f"wind_{wind_type}")
+        self.wind_speed = speed
+        self.wind_turbulence = turbulence
 
     def render(self):
         pass
